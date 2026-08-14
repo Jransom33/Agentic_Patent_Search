@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentic-patents"
+version = "0.1.0"
+requires-python = ">=3.12"
+# ASSUMPTION: 3.12+ is fine even though the local venv is 3.13.
+# Dependencies live in requirements.txt so pip install -r is the source of truth.
+
+[tool.setuptools.packages.find]
+where = ["src"]
