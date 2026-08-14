@@ -10,4 +10,4 @@ requires-python = ">=3.12"
 # Dependencies live in requirements.txt so pip install -r is the source of truth.
 
 [tool.setuptools.packages.find]
-where = ["src"]
+include = ["shared*"]

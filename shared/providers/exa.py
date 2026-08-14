@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Protocol
 
-from agentic_patents.bounds import MAX_CONTENT_FETCHES, MAX_EXA_RESULTS_PER_QUERY
+from shared.bounds import MAX_CONTENT_FETCHES, MAX_EXA_RESULTS_PER_QUERY
 
 
 @dataclass(frozen=True)

@@ -5,8 +5,8 @@ from typing import Protocol
 
 from pydantic import Field
 
-from agentic_patents.bounds import MAX_CLAIM_LIMITATIONS, MAX_CONCEPTS, MAX_QUERIES
-from agentic_patents.models import (
+from shared.bounds import MAX_CLAIM_LIMITATIONS, MAX_CONCEPTS, MAX_QUERIES
+from shared.models import (
     Candidate,
     ClaimLimitation,
     Concept,
@@ -16,7 +16,7 @@ from agentic_patents.models import (
     SearchQuery,
     StrictModel,
 )
-from agentic_patents.providers.exa import DocumentContent
+from shared.providers.exa import DocumentContent
 
 
 class ClaimAnalysis(StrictModel):

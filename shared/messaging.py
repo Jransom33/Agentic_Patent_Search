@@ -9,7 +9,7 @@ from typing import Protocol, TypeVar
 
 from pydantic import BaseModel
 
-from agentic_patents.bounds import MAX_PUBSUB_PAYLOAD_BYTES
+from shared.bounds import MAX_PUBSUB_PAYLOAD_BYTES
 
 T = TypeVar("T", bound=BaseModel)
 

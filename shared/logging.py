@@ -19,7 +19,7 @@ _SECRET_ENV_NAMES = ("ANTHROPIC_API_KEY", "EXA_API_KEY", "CLOUD_SQL_DSN")
 # UNCERTAIN: these patterns will not catch every Exa key format.
 _SECRET_RE = re.compile(r"(sk-ant-|postgresql://|password=|api[_-]?key)", re.I)
 
-_logger = logging.getLogger("agentic_patents")
+_logger = logging.getLogger("shared")
 
 
 def configure(level: str = "INFO") -> None:

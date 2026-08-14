@@ -8,8 +8,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Protocol
 
-from agentic_patents.bounds import JobStatus
-from agentic_patents.models import Report
+from shared.bounds import JobStatus
+from shared.models import Report
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS jobs (

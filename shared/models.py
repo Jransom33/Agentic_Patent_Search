@@ -10,7 +10,7 @@ from typing import Annotated, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from agentic_patents.bounds import (
+from shared.bounds import (
     MAX_CANDIDATES,
     MAX_CLAIM_LIMITATIONS,
     MAX_CONCEPTS,
