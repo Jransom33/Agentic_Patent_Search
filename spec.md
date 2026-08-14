@@ -1,6 +1,6 @@
 # Agentic Prior Art Search Assistant — High-Level Plan
 
-Status: planning reference  
+Status: shared foundation implemented; Components A–C and cloud adapters pending  
 Language: Python  
 Cloud: Google Cloud Platform (GCP)
 
@@ -86,9 +86,9 @@ The three application components communicate asynchronously. Component A
 returns a job ID after publishing the search plan. The user then polls
 Component A until Component C has stored the final report.
 
-## 5. Shared Foundation
+## 5. Shared Foundation (COMPLETED)
 
-The three components should share a small Python package for:
+The three components share the `shared/` Python package for:
 
 - validated message and report models;
 - configuration loading;
@@ -97,9 +97,46 @@ The three components should share a small Python package for:
 - database access used by Components A and C; and
 - narrow Claude and Exa interfaces that can be replaced with fakes in tests.
 
-This shared foundation should be built first. It prevents the independently
+This shared foundation was built first. It prevents the independently
 running components from disagreeing about message formats, job states, or
 report structure and avoids duplicated code.
+
+### 5.1 Implemented Foundation
+
+The following foundation work is complete:
+
+- `shared/bounds.py` defines job states and limits for claims, queries,
+  candidates, content retrieval, uploads, retries, concurrency, and messages.
+- `shared/models.py` defines validated search-plan, candidate-batch, and report
+  contracts. It rejects extra fields, duplicate IDs, broken limitation links,
+  duplicate candidate URLs, invalid date states, duplicate report ranks, and
+  replacement of the required human-review disclaimer.
+- `shared/config.py` loads required settings from environment variables or an
+  optional `.env` file, fails on missing values, and masks API keys and the
+  database DSN in its representation.
+- `shared/logging.py` emits bounded lifecycle fields and redacts multiline,
+  oversized, credential-like, and configured secret values.
+- `shared/messaging.py` serializes pydantic models as bounded UTF-8 JSON and
+  provides Publisher and Subscriber interfaces plus an in-memory FIFO broker.
+- `shared/db.py` defines the PostgreSQL jobs/reports schema, the JobStore
+  interface, and an idempotent in-memory implementation for local use.
+- `shared/providers/claude.py` and `shared/providers/exa.py` define narrow
+  provider interfaces and deterministic fakes that do not call paid APIs.
+- The project uses Python 3.12+, a local `.venv`, and dependencies listed in
+  `requirements.txt`.
+
+The current message contracts intentionally have no schema-version field. If a
+contract changes, all three components will be updated together.
+
+The following foundation integrations remain:
+
+- real Anthropic Claude and Exa API clients for production;
+- a GCP Pub/Sub adapter with explicit acknowledgement and negative
+  acknowledgement handling;
+- a Cloud SQL implementation of JobStore that executes the included schema;
+- automated tests for models, configuration, logging, messaging, storage, and
+  provider fakes; and
+- production wiring that selects real adapters while tests inject fakes.
 
 ## 6. Component A — Intake and Claim Analysis
 
@@ -155,7 +192,7 @@ reports or repeating expensive ranking work unnecessarily.
 
 Component A publishes a search-plan message containing:
 
-- message version and job ID;
+- job ID;
 - critical date;
 - structured claim limitations;
 - concepts and synonyms; and
@@ -163,7 +200,7 @@ Component A publishes a search-plan message containing:
 
 Component B publishes a candidate message containing:
 
-- message version and job ID;
+- job ID;
 - candidate titles, URLs, dates, and short snippets;
 - date-verification state;
 - finding query IDs and related limitation IDs; and
@@ -230,7 +267,7 @@ than uploaded files or full source documents.
 
 Build the project in this order:
 
-1. Shared foundation and data contracts.
+1. Shared foundation and data contracts — implemented.
 2. Component A and its API.
 3. Component B and Redis-backed Exa searching.
 4. Component C and Cloud SQL report persistence.
@@ -243,8 +280,10 @@ time before moving to the next component.
 
 ## 14. Testing and Demonstration
 
-Automated tests should use fake Claude, Exa, Pub/Sub, Redis, and database
-adapters by default so tests do not require paid APIs.
+Fake Claude, Exa, Pub/Sub, and database implementations are available.
+Automated tests still need to be written and should use those fakes plus a
+future Redis fake by default so tests do not require paid APIs or cloud
+services.
 
 The final cloud demonstration should show:
 
