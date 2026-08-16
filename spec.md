@@ -1,6 +1,6 @@
 # Agentic Prior Art Search Assistant — High-Level Plan
 
-Status: shared foundation implemented; Components A–C and cloud adapters pending  
+Status: shared foundation implemented; agent-specific foundation updates and Components A–C pending
 Language: Python  
 Cloud: Google Cloud Platform (GCP)
 
@@ -68,15 +68,16 @@ The final output will be a structured report containing:
 ```mermaid
 flowchart LR
     User[Examiner] -->|"PDF, claims, critical date"| ComponentA["VM A: FastAPI intake"]
-    ComponentA --> ClaudeA[Claude claim analysis]
+    ComponentA --> ClaudeA[LangChain Claude claim analysis]
     ComponentA --> SearchPlans[PubSub search plans]
-    SearchPlans --> ComponentB["VM B: search worker"]
+    SearchPlans --> ComponentB["VM B: iterative search agent"]
     ComponentB <--> Redis[Memorystore Redis]
     ComponentB --> ExaSearch[Exa search]
+    ComponentB --> ClaudeB[LangChain Claude search decisions]
     ComponentB --> Candidates[PubSub candidates]
     Candidates --> ComponentC["VM C: report worker"]
     ComponentC --> ExaContents[Exa contents]
-    ComponentC --> ClaudeC[Claude ranking]
+    ComponentC --> ClaudeC[LangChain Claude ranking]
     ComponentC --> Postgres[Cloud SQL PostgreSQL]
     ComponentA -->|"Read job and report"| Postgres
     User -->|"Poll using job ID"| ComponentA
@@ -86,7 +87,7 @@ The three application components communicate asynchronously. Component A
 returns a job ID after publishing the search plan. The user then polls
 Component A until Component C has stored the final report.
 
-## 5. Shared Foundation (COMPLETED)
+## 5. Shared Foundation (IMPLEMENTED; UPDATES PENDING)
 
 The three components share the `shared/` Python package for:
 
@@ -128,9 +129,35 @@ The following foundation work is complete:
 The current message contracts intentionally have no schema-version field. If a
 contract changes, all three components will be updated together.
 
+### 5.2 Not Completed — Required Agent Plan Changes
+
+The existing foundation must be extended before implementing the new Component
+B design:
+
+- `shared/bounds.py` must allow at most 12 initial queries, 40 total queries,
+  eight search passes, seven Claude continuation decisions, and three to six
+  follow-up queries per decision. It must also define a finite Redis cache TTL.
+- `shared/models.py` must make `CandidateBatchMessage` carry the effective
+  search plan, meaning the original plan plus every follow-up query actually
+  executed by Component B.
+- Candidate query IDs must exist in that effective plan. A query's intended
+  limitations must be derived from its `SearchQuery.limitation_ids` mapping
+  rather than treated as independent proof that a document contains those
+  limitations. Component C will make the actual evidence determination.
+- `shared/providers/claude.py` must add a Component B search-decision operation
+  and deterministic fake. Its production implementation will use
+  `langchain-anthropic` with validated structured output.
+- Component B must load only the Pub/Sub, Redis, Exa, Anthropic, and logging
+  settings it needs; it must not receive Cloud SQL credentials.
+
+The `SearchDecision` structure and iterative loop belong inside Component B,
+not the shared foundation, because no other component needs them.
+
+### 5.3 Other Pending Foundation Integrations
+
 The following foundation integrations remain:
 
-- real Anthropic Claude and Exa API clients for production;
+- real LangChain Anthropic Claude and Exa API clients for production;
 - a GCP Pub/Sub adapter with explicit acknowledgement and negative
   acknowledgement handling;
 - a Cloud SQL implementation of JobStore that executes the included schema;
@@ -146,8 +173,8 @@ Component A will be a FastAPI service responsible for:
 - validating file type, size, encoding, extracted text, and date;
 - extracting embedded text from the specification;
 - creating a job record in Cloud SQL;
-- asking Claude to identify claim limitations, concepts, synonyms, and useful
-  query combinations;
+- using a structured LangChain Claude call to identify claim limitations,
+  concepts, synonyms, and at most 12 useful initial queries;
 - validating Claude's structured response;
 - publishing the search plan to Pub/Sub; and
 - returning job status or the final stored report through the API.
@@ -155,22 +182,91 @@ Component A will be a FastAPI service responsible for:
 Uploaded documents will be processed without long-term storage in the initial
 version. Raw document text must not be placed in logs or Pub/Sub messages.
 
+### Component A Sequence
+
+```mermaid
+flowchart TD
+    Submit["Receive PDF, claims, and critical date"] --> Validate{Inputs valid}
+    Validate -->|no| Reject[Return safe client error]
+    Validate -->|yes| Extract[Extract and normalize text]
+    Extract --> CreateJob["Create job: analyzing"]
+    CreateJob --> Analyze[LangChain Claude creates claim map and search plan]
+    Analyze --> CheckPlan{Structured plan valid}
+    CheckPlan -->|no| MarkFailed[Mark job failed]
+    CheckPlan -->|yes| Publish[Publish SearchPlanMessage]
+    Publish --> Confirm{Publish confirmed}
+    Confirm -->|no| MarkFailed
+    Confirm -->|yes| ReturnId[Return job ID]
+    Poll[Get job by ID] --> ReadDatabase[Read status or report from Cloud SQL]
+    ReadDatabase --> Respond[Return current result]
+```
+
 ## 7. Component B — Search Orchestration and Retrieval
 
-Component B will be a background worker responsible for:
+Component B will be a bounded iterative search agent running as one background
+worker. It will:
 
-- receiving search plans from Pub/Sub;
-- executing a bounded number of Exa searches concurrently;
-- using the critical date as an initial publication-date filter;
-- checking Redis before repeating an equivalent Exa query;
-- caching successful public Exa result metadata for a limited time;
+- receive a structured search plan from Pub/Sub, not the raw specification or
+  claims files;
+- execute up to 12 initial Exa queries using bounded concurrency;
+- check Redis before each equivalent Exa query and cache successful public
+  result metadata for a limited time;
 - validating publication dates again after retrieval;
-- normalizing URLs and merging duplicate results;
-- preserving which queries and limitations found each candidate; and
-- publishing the candidate batch to Component C through Pub/Sub.
+- enforce the critical date, normalize URLs, merge duplicates, and preserve
+  which executed queries found each candidate;
+- give Claude the claim limitations, tried queries, and bounded candidate
+  snippets after each search pass;
+- use a small validated `SearchDecision` response in which Claude chooses
+  `finish` or `continue`, identifies remaining coverage gaps, and supplies
+  three to six follow-up queries when continuing;
+- repeat until Claude finishes or Python enforces a hard ceiling of 40 total
+  queries, eight search passes, or seven continuation decisions;
+- carry the original and follow-up queries forward as the effective search
+  plan; and
+- publish the candidates, effective plan, provenance, and cache totals to
+  Component C through Pub/Sub.
+
+Claude chooses when sufficient searching has been performed, but ordinary
+Python controls the loop and all hard limits. The MVP will not use an
+open-ended ReAct agent, LangGraph, multiple agents, or a feedback topic from
+Component C.
 
 Redis is part of the successful application path, not an unused supporting
 service. Repeating the same searches should visibly produce cache hits.
+
+Component B will not retrieve full documents, rank evidence, draw legal
+conclusions, or access Cloud SQL. Those responsibilities remain with Component
+C.
+
+### Component B Sequence
+
+Exa results feed the Claude decision, and Claude's follow-up queries feed the
+next Exa pass through Component B. They are sequential parts of one bounded
+loop, not parallel workflows.
+
+```mermaid
+flowchart TD
+    Receive[Receive SearchPlanMessage] --> DoneCheck{Job already published}
+    DoneCheck -->|yes| AckDuplicate[Acknowledge duplicate]
+    DoneCheck -->|no| Initial[Load up to 12 initial queries]
+    Initial --> CacheCheck{Equivalent query cached}
+    CacheCheck -->|yes| CachedResults[Use cached Exa results]
+    CacheCheck -->|no| Exa[Run Exa search]
+    Exa --> SaveCache[Cache successful public metadata]
+    CachedResults --> Consolidate[Filter dates and merge candidates]
+    SaveCache --> Consolidate
+    Consolidate --> LimitCheck{Hard search limit reached}
+    LimitCheck -->|yes| Publish[Publish effective plan and candidates]
+    LimitCheck -->|no| ClaudeDecision[Claude evaluates coverage]
+    ClaudeDecision --> ValidateDecision{SearchDecision valid}
+    ValidateDecision -->|no| RetryOrFail[Bounded retry or safe failure]
+    ValidateDecision -->|yes| Action{Finish or continue}
+    Action -->|finish| Publish
+    Action -->|continue| Followups[Validate 3 to 6 new queries]
+    Followups --> CacheCheck
+    Publish --> MarkDone[Record best-effort Redis completion key]
+    MarkDone --> Ack[Acknowledge input message]
+```
 
 ## 8. Component C — Evidence Ranking and Report Storage
 
@@ -179,7 +275,8 @@ Component C will be a background worker responsible for:
 - receiving candidate batches from Pub/Sub;
 - screening snippets before requesting additional content;
 - retrieving full Exa content only for a limited promising or uncertain set;
-- asking Claude to evaluate candidates against specific claim limitations;
+- using a structured LangChain Claude call to evaluate candidates against
+  specific claim limitations;
 - requiring source-linked supporting passages for positive findings;
 - preserving uncertainty when dates or evidence are incomplete;
 - generating the structured decision-support report; and
@@ -187,6 +284,26 @@ Component C will be a background worker responsible for:
 
 Component C must handle duplicate Pub/Sub deliveries without creating duplicate
 reports or repeating expensive ranking work unnecessarily.
+
+### Component C Sequence
+
+```mermaid
+flowchart TD
+    Receive[Receive CandidateBatchMessage] --> DuplicateCheck{Report already exists}
+    DuplicateCheck -->|yes| AckDuplicate[Acknowledge duplicate]
+    DuplicateCheck -->|no| FailureCheck{Terminal failure outcome}
+    FailureCheck -->|yes| MarkFailed[Mark job failed]
+    MarkFailed --> AckFailure[Acknowledge message]
+    FailureCheck -->|no| MarkRanking[Mark job ranking]
+    MarkRanking --> Screen[Screen candidate snippets]
+    Screen --> Select[Select promising or uncertain candidates]
+    Select --> Fetch[Retrieve selected content through Exa]
+    Fetch --> Rank[LangChain Claude ranks evidence]
+    Rank --> ValidateReport{Structured report valid}
+    ValidateReport -->|no| RetryOrFail[Bounded retry or safe failure]
+    ValidateReport -->|yes| Store[Store report and completed status]
+    Store --> AckSuccess[Acknowledge input message]
+```
 
 ## 9. High-Level Data Contracts
 
@@ -196,15 +313,20 @@ Component A publishes a search-plan message containing:
 - critical date;
 - structured claim limitations;
 - concepts and synonyms; and
-- bounded search queries linked to relevant limitations.
+- up to 12 initial search queries linked to their intended limitations.
 
 Component B publishes a candidate message containing:
 
-- job ID;
+- the effective search plan containing both initial and executed follow-up
+  queries;
 - candidate titles, URLs, dates, and short snippets;
 - date-verification state;
-- finding query IDs and related limitation IDs; and
+- the query IDs that actually found each candidate; and
 - aggregate search and cache information.
+
+The effective plan is the source of query-to-limitation search intent.
+Component C must independently determine whether a candidate actually
+discloses a limitation.
 
 Component C stores a report containing:
 
@@ -225,9 +347,11 @@ than uploaded files or full source documents.
 2. Component A validates the inputs and creates a job.
 3. Claude produces a validated claim map and search plan.
 4. Component A publishes the plan and returns a job ID.
-5. Component B receives the plan and checks Redis for reusable searches.
-6. Component B calls Exa for cache misses, filters and deduplicates the results,
-   and publishes the candidate batch.
+5. Component B receives the plan, checks Redis, and runs the initial Exa
+   searches.
+6. Component B consolidates the results and asks Claude whether to finish or
+   generate targeted follow-up queries. It repeats within the configured hard
+   limits, then publishes the effective plan and candidate batch.
 7. Component C receives the candidates, retrieves selected evidence, and asks
    Claude to rank it.
 8. Component C stores the completed report in Cloud SQL.
@@ -243,6 +367,11 @@ than uploaded files or full source documents.
   state instead of an indefinitely running job.
 - External calls, message sizes, query counts, result counts, concurrency, and
   uploaded files must all be bounded.
+- Component B permits at most 12 initial queries, 40 total queries, eight search
+  passes, seven Claude continuation decisions, and three to six follow-up
+  queries per continuation.
+- Claude may finish the search early, but it cannot override those limits or
+  execute Exa, Redis, or Pub/Sub operations directly.
 - Job states should be simple and visible: analyzing, searching, ranking,
   completed, or failed.
 - Logs should include the component, job ID, lifecycle event, duration, and
@@ -252,6 +381,7 @@ than uploaded files or full source documents.
 
 - Treat uploaded patent text and retrieved web content as untrusted data, not
   as model instructions.
+- Treat Exa snippets supplied to the search agent as untrusted data.
 - Validate all files, API data, Pub/Sub messages, and model output.
 - Do not execute uploaded content or fetch arbitrary result URLs directly.
 - Keep Claude, Exa, database, and Redis credentials outside Git.
@@ -267,9 +397,10 @@ than uploaded files or full source documents.
 
 Build the project in this order:
 
-1. Shared foundation and data contracts — implemented.
+1. Apply the pending agent-specific updates to the implemented shared
+   foundation.
 2. Component A and its API.
-3. Component B and Redis-backed Exa searching.
+3. Component B and its LangChain-guided, Redis-backed iterative Exa search.
 4. Component C and Cloud SQL report persistence.
 5. GCP resources and deployment of each process to its own VM.
 6. End-to-end testing, documentation, cleanup instructions, and screenshots.
@@ -284,6 +415,11 @@ Fake Claude, Exa, Pub/Sub, and database implementations are available.
 Automated tests still need to be written and should use those fakes plus a
 future Redis fake by default so tests do not require paid APIs or cloud
 services.
+
+Component B tests must demonstrate immediate agent-selected stopping,
+continuation with new queries, forced stopping at the configured budgets,
+rejection of invalid follow-up queries, query provenance, date filtering,
+deduplication, and Redis miss-to-hit behavior.
 
 The final cloud demonstration should show:
 
@@ -315,6 +451,8 @@ The project is complete when:
 - Components A, B, and C run on three GCP VMs;
 - Pub/Sub, Memorystore, and Cloud SQL all participate in the successful path;
 - a valid submission produces a stored, retrievable report;
+- Component B can refine weak searches and finish early when Claude determines
+  that further searching is unlikely to improve coverage;
 - duplicate messages do not create duplicate reports;
 - invalid inputs and provider failures are handled safely;
 - no secrets or confidential document content are committed or logged; and
