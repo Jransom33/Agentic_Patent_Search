@@ -87,6 +87,9 @@ The three application components communicate asynchronously. Component A
 returns a job ID after publishing the search plan. The user then polls
 Component A until Component C has stored the final report.
 
+Sections 5 through 11 are ordered by implementation: each foundation-update
+section must be completed immediately before the component that depends on it.
+
 ## 5. Shared Foundation (IMPLEMENTED; UPDATES PENDING)
 
 The three components share the `shared/` Python package for:
@@ -129,43 +132,19 @@ The following foundation work is complete:
 The current message contracts intentionally have no schema-version field. If a
 contract changes, all three components will be updated together.
 
-### 5.2 Not Completed — Required Agent Plan Changes
+## 6. Foundation Updates Required Before Component A (NOT COMPLETED)
 
-The existing foundation must be extended before implementing the new Component
-B design:
+Complete these shared updates first because Component A's output contract and
+tests depend on them:
 
-- `shared/bounds.py` must allow at most 12 initial queries, 40 total queries,
-  eight search passes, seven Claude continuation decisions, and three to six
-  follow-up queries per decision. It must also define a finite Redis cache TTL.
-- `shared/models.py` must make `CandidateBatchMessage` carry the effective
-  search plan, meaning the original plan plus every follow-up query actually
-  executed by Component B.
-- Candidate query IDs must exist in that effective plan. A query's intended
-  limitations must be derived from its `SearchQuery.limitation_ids` mapping
-  rather than treated as independent proof that a document contains those
-  limitations. Component C will make the actual evidence determination.
-- `shared/providers/claude.py` must add a Component B search-decision operation
-  and deterministic fake. Its production implementation will use
-  `langchain-anthropic` with validated structured output.
-- Component B must load only the Pub/Sub, Redis, Exa, Anthropic, and logging
-  settings it needs; it must not receive Cloud SQL credentials.
+- `shared/bounds.py` must define Component A's limit of at most 12 initial
+  queries separately from Component B's larger total search budget, and
+  `SearchPlanMessage` must enforce that 12-query limit.
+- Automated tests must exist for the implemented foundation: models,
+  configuration, logging, messaging, storage, and provider fakes. Later
+  components then build on verified contracts.
 
-The `SearchDecision` structure and iterative loop belong inside Component B,
-not the shared foundation, because no other component needs them.
-
-### 5.3 Other Pending Foundation Integrations
-
-The following foundation integrations remain:
-
-- real LangChain Anthropic Claude and Exa API clients for production;
-- a GCP Pub/Sub adapter with explicit acknowledgement and negative
-  acknowledgement handling;
-- a Cloud SQL implementation of JobStore that executes the included schema;
-- automated tests for models, configuration, logging, messaging, storage, and
-  provider fakes; and
-- production wiring that selects real adapters while tests inject fakes.
-
-## 6. Component A — Intake and Claim Analysis
+## 7. Component A — Intake and Claim Analysis
 
 Component A will be a FastAPI service responsible for:
 
@@ -181,6 +160,10 @@ Component A will be a FastAPI service responsible for:
 
 Uploaded documents will be processed without long-term storage in the initial
 version. Raw document text must not be placed in logs or Pub/Sub messages.
+
+Building Component A also includes the production LangChain
+(`langchain-anthropic`) claim-analysis adapter behind the existing `ClaudeClient`
+interface; automated tests keep using the deterministic fake.
 
 ### Component A Sequence
 
@@ -201,7 +184,37 @@ flowchart TD
     ReadDatabase --> Respond[Return current result]
 ```
 
-## 7. Component B — Search Orchestration and Retrieval
+## 8. Foundation Updates Required Before Component B (NOT COMPLETED)
+
+The existing foundation must be extended before implementing the new Component
+B design:
+
+- `shared/bounds.py` must allow at most 40 total queries, eight search passes,
+  seven Claude continuation decisions, and three to six follow-up queries per
+  decision. It must also define a finite Redis cache TTL.
+- `shared/models.py` must make `CandidateBatchMessage` carry the effective
+  search plan, meaning the original plan plus every follow-up query actually
+  executed by Component B. The job ID travels inside that plan, so Component C
+  reads it from there.
+- `CandidateBatchMessage` must also carry a sanitized terminal-failure outcome
+  so Component C can mark a job failed when Component B's search permanently
+  fails.
+- Candidate query IDs must exist in that effective plan. A query's intended
+  limitations must be derived from its `SearchQuery.limitation_ids` mapping
+  rather than treated as independent proof that a document contains those
+  limitations. Component C will make the actual evidence determination.
+- `shared/providers/claude.py` must add a Component B search-decision operation
+  and deterministic fake. Its production implementation will use
+  `langchain-anthropic` with validated structured output.
+- A real Exa API client is needed for production; Component B is its primary
+  consumer. Tests keep using the deterministic fake.
+- Component B must load only the Pub/Sub, Redis, Exa, Anthropic, and logging
+  settings it needs; it must not receive Cloud SQL credentials.
+
+The `SearchDecision` structure and iterative loop belong inside Component B,
+not the shared foundation, because no other component needs them.
+
+## 9. Component B — Search Orchestration and Retrieval
 
 Component B will be a bounded iterative search agent running as one background
 worker. It will:
@@ -211,7 +224,7 @@ worker. It will:
 - execute up to 12 initial Exa queries using bounded concurrency;
 - check Redis before each equivalent Exa query and cache successful public
   result metadata for a limited time;
-- validating publication dates again after retrieval;
+- re-validate publication dates after retrieval;
 - enforce the critical date, normalize URLs, merge duplicates, and preserve
   which executed queries found each candidate;
 - give Claude the claim limitations, tried queries, and bounded candidate
@@ -268,7 +281,7 @@ flowchart TD
     MarkDone --> Ack[Acknowledge input message]
 ```
 
-## 8. Component C — Evidence Ranking and Report Storage
+## 10. Component C — Evidence Ranking and Report Storage
 
 Component C will be a background worker responsible for:
 
@@ -284,6 +297,10 @@ Component C will be a background worker responsible for:
 
 Component C must handle duplicate Pub/Sub deliveries without creating duplicate
 reports or repeating expensive ranking work unnecessarily.
+
+Building Component C also includes the production LangChain Claude ranking
+adapter behind the existing `ClaudeClient` interface; automated tests keep
+using the deterministic fake.
 
 ### Component C Sequence
 
@@ -305,7 +322,18 @@ flowchart TD
     Store --> AckSuccess[Acknowledge input message]
 ```
 
-## 9. High-Level Data Contracts
+## 11. Production Adapters and Cloud Deployment (NOT COMPLETED)
+
+These remaining foundation integrations are needed only when moving from the
+in-memory fakes to GCP, after Components A–C work locally:
+
+- a GCP Pub/Sub adapter with explicit acknowledgement and negative
+  acknowledgement handling;
+- a Cloud SQL implementation of JobStore that executes the included schema;
+- production wiring that selects real adapters while tests inject fakes; and
+- GCP resources and deployment of each process to its own Compute Engine VM.
+
+## 12. High-Level Data Contracts
 
 Component A publishes a search-plan message containing:
 
@@ -341,7 +369,7 @@ Component C stores a report containing:
 Messages should remain small and contain structured intermediate results rather
 than uploaded files or full source documents.
 
-## 10. End-to-End Flow
+## 13. End-to-End Flow
 
 1. The user submits the three inputs to Component A.
 2. Component A validates the inputs and creates a job.
@@ -357,7 +385,7 @@ than uploaded files or full source documents.
 8. Component C stores the completed report in Cloud SQL.
 9. The user retrieves the report from Component A using the job ID.
 
-## 11. Reliability
+## 14. Reliability
 
 - Pub/Sub delivers messages at least once, so processing must be idempotent.
 - A component must not acknowledge its input until its required output has been
@@ -377,7 +405,7 @@ than uploaded files or full source documents.
 - Logs should include the component, job ID, lifecycle event, duration, and
   safe error code so the complete workflow can be demonstrated.
 
-## 12. Security
+## 15. Security
 
 - Treat uploaded patent text and retrieved web content as untrusted data, not
   as model instructions.
@@ -393,23 +421,25 @@ than uploaded files or full source documents.
 - Do not log uploaded text, prompts, credentials, or full provider responses.
 - Use public or synthetic patent data for tests and screenshots.
 
-## 13. Build Order
+## 16. Build Order
 
-Build the project in this order:
+Build the project in the order of Sections 5–11:
 
-1. Apply the pending agent-specific updates to the implemented shared
-   foundation.
-2. Component A and its API.
-3. Component B and its LangChain-guided, Redis-backed iterative Exa search.
-4. Component C and Cloud SQL report persistence.
-5. GCP resources and deployment of each process to its own VM.
-6. End-to-end testing, documentation, cleanup instructions, and screenshots.
+1. Foundation updates required before Component A (Section 6).
+2. Component A and its API (Section 7).
+3. Foundation updates required before Component B (Section 8).
+4. Component B and its LangChain-guided, Redis-backed iterative Exa search
+   (Section 9).
+5. Component C and Cloud SQL report persistence (Section 10).
+6. Production adapters, GCP resources, and deployment of each process to its
+   own VM (Section 11).
+7. End-to-end testing, documentation, cleanup instructions, and screenshots.
 
 After selecting one item from this list, apply the task-breakdown rule to that
 item before writing code. Implement and validate those smaller tasks one at a
 time before moving to the next component.
 
-## 14. Testing and Demonstration
+## 17. Testing and Demonstration
 
 Fake Claude, Exa, Pub/Sub, and database implementations are available.
 Automated tests still need to be written and should use those fakes plus a
@@ -431,7 +461,7 @@ The final cloud demonstration should show:
 - retrieval of that report through Component A; and
 - safe handling of at least one invalid submission.
 
-## 15. Documentation Deliverables
+## 18. Documentation Deliverables
 
 The repository documentation should include:
 
@@ -444,7 +474,7 @@ The repository documentation should include:
 - known limitations and cost considerations; and
 - screenshots proving the end-to-end system works.
 
-## 16. Completion Criteria
+## 19. Completion Criteria
 
 The project is complete when:
 
