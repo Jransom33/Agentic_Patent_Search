@@ -25,7 +25,9 @@ MAX_CLAIM_LIMITATIONS = 20
 MAX_LIMITATION_TEXT_LENGTH = 500
 MAX_CONCEPTS = 30
 MAX_SYNONYMS_PER_CONCEPT = 8
-MAX_QUERIES = 8
+# Component A's initial-query cap. Component B's larger total search budget
+# is defined separately later (spec §8). Do not reuse this as that budget.
+MAX_INITIAL_QUERIES = 12
 MAX_QUERY_TEXT_LENGTH = 300
 
 # --- Retrieval bounds (Component B / candidate messages) ---

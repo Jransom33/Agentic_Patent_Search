@@ -5,7 +5,7 @@ from typing import Protocol
 
 from pydantic import Field
 
-from shared.bounds import MAX_CLAIM_LIMITATIONS, MAX_CONCEPTS, MAX_QUERIES
+from shared.bounds import MAX_CLAIM_LIMITATIONS, MAX_CONCEPTS, MAX_INITIAL_QUERIES
 from shared.models import (
     Candidate,
     ClaimLimitation,
@@ -26,7 +26,7 @@ class ClaimAnalysis(StrictModel):
     # Component A should build SearchPlanMessage from this so those validators run.
     limitations: list[ClaimLimitation] = Field(min_length=1, max_length=MAX_CLAIM_LIMITATIONS)
     concepts: list[Concept] = Field(min_length=1, max_length=MAX_CONCEPTS)
-    queries: list[SearchQuery] = Field(min_length=1, max_length=MAX_QUERIES)
+    queries: list[SearchQuery] = Field(min_length=1, max_length=MAX_INITIAL_QUERIES)
 
 
 class ClaudeClient(Protocol):

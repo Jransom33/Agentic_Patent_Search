@@ -14,9 +14,9 @@ from shared.bounds import (
     MAX_CANDIDATES,
     MAX_CLAIM_LIMITATIONS,
     MAX_CONCEPTS,
+    MAX_INITIAL_QUERIES,
     MAX_LIMITATION_TEXT_LENGTH,
     MAX_PASSAGE_LENGTH,
-    MAX_QUERIES,
     MAX_QUERY_TEXT_LENGTH,
     MAX_SNIPPET_LENGTH,
     MAX_SYNONYMS_PER_CONCEPT,
@@ -64,7 +64,8 @@ class SearchPlanMessage(StrictModel):
     critical_date: date
     limitations: list[ClaimLimitation] = Field(min_length=1, max_length=MAX_CLAIM_LIMITATIONS)
     concepts: list[Concept] = Field(min_length=1, max_length=MAX_CONCEPTS)
-    queries: list[SearchQuery] = Field(min_length=1, max_length=MAX_QUERIES)
+    # Spec §6: Component A may publish at most 12 initial queries.
+    queries: list[SearchQuery] = Field(min_length=1, max_length=MAX_INITIAL_QUERIES)
     # INCOMPLETE: payload byte size is not checked here; Task 7 messaging should
     # reject bodies over MAX_PUBSUB_PAYLOAD_BYTES.
 
@@ -118,7 +119,8 @@ class Candidate(StrictModel):
     published_on: date | None = None
     snippet: str = Field(min_length=1, max_length=MAX_SNIPPET_LENGTH)
     date_check: DateCheck
-    query_ids: list[IdStr] = Field(min_length=1, max_length=MAX_QUERIES)
+    # FOLLOW-UP (spec §8): move this ceiling to Component B's total query budget.
+    query_ids: list[IdStr] = Field(min_length=1, max_length=MAX_INITIAL_QUERIES)
     limitation_ids: list[IdStr] = Field(min_length=1, max_length=MAX_CLAIM_LIMITATIONS)
     # INCOMPLETE: ids are not checked against the original SearchPlanMessage here.
     # Component B/C must keep those ids consistent when they build this object.
@@ -136,9 +138,11 @@ class Candidate(StrictModel):
 class SearchCacheTotals(StrictModel):
     # UNCERTAIN: cache_hits + cache_misses is not required to equal searches_run
     # (a search can fail without a cache result).
-    searches_run: int = Field(ge=0, le=MAX_QUERIES)
-    cache_hits: int = Field(ge=0, le=MAX_QUERIES)
-    cache_misses: int = Field(ge=0, le=MAX_QUERIES)
+    # FOLLOW-UP (spec §8): these ceilings should use the total search budget,
+    # not the initial-query cap. Using MAX_INITIAL_QUERIES until that bound exists.
+    searches_run: int = Field(ge=0, le=MAX_INITIAL_QUERIES)
+    cache_hits: int = Field(ge=0, le=MAX_INITIAL_QUERIES)
+    cache_misses: int = Field(ge=0, le=MAX_INITIAL_QUERIES)
 
 
 class CandidateBatchMessage(StrictModel):

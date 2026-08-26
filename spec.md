@@ -1,6 +1,6 @@
 # Agentic Prior Art Search Assistant — High-Level Plan
 
-Status: shared foundation implemented; agent-specific foundation updates and Components A–C pending
+Status: shared foundation implemented, including Section 6 updates; Components A–C pending
 Language: Python  
 Cloud: Google Cloud Platform (GCP)
 
@@ -90,7 +90,7 @@ Component A until Component C has stored the final report.
 Sections 5 through 11 are ordered by implementation: each foundation-update
 section must be completed immediately before the component that depends on it.
 
-## 5. Shared Foundation (IMPLEMENTED; UPDATES PENDING)
+## 5. Shared Foundation (IMPLEMENTED)
 
 The three components share the `shared/` Python package for:
 
@@ -132,17 +132,17 @@ The following foundation work is complete:
 The current message contracts intentionally have no schema-version field. If a
 contract changes, all three components will be updated together.
 
-## 6. Foundation Updates Required Before Component A (NOT COMPLETED)
+## 6. Foundation Updates Required Before Component A (COMPLETED)
 
-Complete these shared updates first because Component A's output contract and
-tests depend on them:
+These shared updates are in place so Component A's output contract and tests
+can depend on them:
 
-- `shared/bounds.py` must define Component A's limit of at most 12 initial
-  queries separately from Component B's larger total search budget, and
-  `SearchPlanMessage` must enforce that 12-query limit.
-- Automated tests must exist for the implemented foundation: models,
-  configuration, logging, messaging, storage, and provider fakes. Later
-  components then build on verified contracts.
+- `shared/bounds.py` defines Component A's limit of at most 12 initial
+  queries (`MAX_INITIAL_QUERIES`) separately from Component B's larger total
+  search budget, and `SearchPlanMessage` enforces that 12-query limit.
+- Automated tests cover the implemented foundation: models, configuration,
+  logging, messaging, storage, and provider fakes. Later components then
+  build on verified contracts.
 
 ## 7. Component A — Intake and Claim Analysis
 
@@ -442,9 +442,9 @@ time before moving to the next component.
 ## 17. Testing and Demonstration
 
 Fake Claude, Exa, Pub/Sub, and database implementations are available.
-Automated tests still need to be written and should use those fakes plus a
-future Redis fake by default so tests do not require paid APIs or cloud
-services.
+Automated tests for the shared foundation use those fakes by default so they
+do not require paid APIs or cloud services. A Redis fake still needs to be
+added with Component B.
 
 Component B tests must demonstrate immediate agent-selected stopping,
 continuation with new queries, forced stopping at the configured budgets,
