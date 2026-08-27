@@ -1,6 +1,6 @@
 # Agentic Prior Art Search Assistant — High-Level Plan
 
-Status: shared foundation implemented, including Section 6 updates; Components A–C pending
+Status: shared foundation and Component A implemented (Sections 5–7); Components B and C pending
 Language: Python  
 Cloud: Google Cloud Platform (GCP)
 
@@ -126,6 +126,9 @@ The following foundation work is complete:
   interface, and an idempotent in-memory implementation for local use.
 - `shared/providers/claude.py` and `shared/providers/exa.py` define narrow
   provider interfaces and deterministic fakes that do not call paid APIs.
+  The Claude interfaces are split per consumer: `ClaimAnalyzer` for
+  Component A and `CandidateRanker` for Component C, so each component's
+  production adapter implements only the operation it uses.
 - The project uses Python 3.12+, a local `.venv`, and dependencies listed in
   `requirements.txt`.
 
@@ -144,9 +147,10 @@ can depend on them:
   logging, messaging, storage, and provider fakes. Later components then
   build on verified contracts.
 
-## 7. Component A — Intake and Claim Analysis
+## 7. Component A — Intake and Claim Analysis (IMPLEMENTED)
 
-Component A will be a FastAPI service responsible for:
+Component A's code lives in the `intake/` package. It is a FastAPI service
+responsible for:
 
 - receiving the specification PDF, claims file, and critical date;
 - validating file type, size, encoding, extracted text, and date;
@@ -158,12 +162,55 @@ Component A will be a FastAPI service responsible for:
 - publishing the search plan to Pub/Sub; and
 - returning job status or the final stored report through the API.
 
-Uploaded documents will be processed without long-term storage in the initial
+Uploaded documents are processed without long-term storage in the initial
 version. Raw document text must not be placed in logs or Pub/Sub messages.
 
-Building Component A also includes the production LangChain
-(`langchain-anthropic`) claim-analysis adapter behind the existing `ClaudeClient`
-interface; automated tests keep using the deterministic fake.
+Component A also includes the production LangChain (`langchain-anthropic`)
+claim-analysis adapter behind the shared `ClaimAnalyzer` interface; automated
+tests keep using the deterministic fake.
+
+### 7.1 Implemented Component A
+
+- `intake/extraction.py` validates uploads and returns normalized text: it
+  enforces the combined `MAX_UPLOAD_BYTES` cap, rejects non-PDF bytes and
+  image-only PDFs (no OCR), requires UTF-8 claims, and parses a strict
+  `YYYY-MM-DD` critical date. Validation errors carry client-safe messages
+  that never echo document text.
+- `intake/pipeline.py` implements the sequence below: create the job in
+  `analyzing`, call `ClaimAnalyzer.analyze_claims`, rebuild the result as a
+  `SearchPlanMessage` so the shared validators run, publish it, and set the
+  job to `searching`. Failures mark the job `failed` with a short safe code
+  (`analysis_failed` or `publish_failed`) so no job runs indefinitely.
+- `intake/api.py` exposes `POST /jobs` (202 with job ID; 400 for invalid
+  input; 502 with job ID and error code when analysis or publish fails) and
+  `GET /jobs/{job_id}` (status, error code if failed, and the stored report
+  once completed; 404 for unknown IDs). Backends are injected through FastAPI
+  dependencies; `intake/main.py` wires local runs.
+- `intake/claude_adapter.py` implements `ClaimAnalyzer` with
+  `langchain-anthropic` structured output validated against `ClaimAnalysis`,
+  temperature 0, and `MAX_RETRIES` bounded provider retries. Instructions
+  live in the system prompt; uploaded documents are passed only as tagged
+  untrusted data.
+- Tests in `tests/test_intake_extraction.py` and `tests/test_intake_api.py`
+  cover the happy path, every rejection case, provider and publish failures,
+  and polling. They use the in-memory fakes and never call paid APIs.
+
+Assumptions and known limits of this version:
+
+- `MAX_UPLOAD_BYTES` is a combined cap for both files, and uploads are read
+  fully into memory before the size check; a streaming guard is production
+  follow-up work.
+- The critical date has no plausibility range check; any valid calendar date
+  is accepted.
+- One `analysis_failed` code covers both provider errors and invalid
+  structured output, and the pipeline itself does not retry (only the
+  adapter's provider-level retries are bounded by `MAX_RETRIES`).
+- The adapter's default model name must be re-verified before deployment,
+  and very long specifications are sent whole because `shared/bounds.py`
+  defines no extracted-text length cap yet.
+- Local runs (`python -m intake.main`) use the in-memory store and broker
+  and `FakeClaude`; jobs vanish on restart. Real Cloud SQL, Pub/Sub, and
+  Claude wiring arrive with Section 11.
 
 ### Component A Sequence
 
@@ -203,8 +250,9 @@ B design:
   limitations must be derived from its `SearchQuery.limitation_ids` mapping
   rather than treated as independent proof that a document contains those
   limitations. Component C will make the actual evidence determination.
-- `shared/providers/claude.py` must add a Component B search-decision operation
-  and deterministic fake. Its production implementation will use
+- `shared/providers/claude.py` must add a separate narrow search-decision
+  interface for Component B (alongside `ClaimAnalyzer` and `CandidateRanker`)
+  and a deterministic fake. Its production implementation will use
   `langchain-anthropic` with validated structured output.
 - A real Exa API client is needed for production; Component B is its primary
   consumer. Tests keep using the deterministic fake.
@@ -216,8 +264,8 @@ not the shared foundation, because no other component needs them.
 
 ## 9. Component B — Search Orchestration and Retrieval
 
-Component B will be a bounded iterative search agent running as one background
-worker. It will:
+Component B's code lives in the `search/` package. It will be a bounded
+iterative search agent running as one background worker. It will:
 
 - receive a structured search plan from Pub/Sub, not the raw specification or
   claims files;
@@ -283,7 +331,8 @@ flowchart TD
 
 ## 10. Component C — Evidence Ranking and Report Storage
 
-Component C will be a background worker responsible for:
+Component C's code lives in the `report/` package. It will be a background
+worker responsible for:
 
 - receiving candidate batches from Pub/Sub;
 - screening snippets before requesting additional content;
@@ -299,8 +348,8 @@ Component C must handle duplicate Pub/Sub deliveries without creating duplicate
 reports or repeating expensive ranking work unnecessarily.
 
 Building Component C also includes the production LangChain Claude ranking
-adapter behind the existing `ClaudeClient` interface; automated tests keep
-using the deterministic fake.
+adapter behind the shared `CandidateRanker` interface, implemented inside
+`report/`; automated tests keep using the deterministic fake.
 
 ### Component C Sequence
 
@@ -442,9 +491,9 @@ time before moving to the next component.
 ## 17. Testing and Demonstration
 
 Fake Claude, Exa, Pub/Sub, and database implementations are available.
-Automated tests for the shared foundation use those fakes by default so they
-do not require paid APIs or cloud services. A Redis fake still needs to be
-added with Component B.
+Automated tests for the shared foundation and Component A use those fakes by
+default so they do not require paid APIs or cloud services. A Redis fake
+still needs to be added with Component B.
 
 Component B tests must demonstrate immediate agent-selected stopping,
 continuation with new queries, forced stopping at the configured budgets,

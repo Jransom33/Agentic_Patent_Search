@@ -29,12 +29,16 @@ class ClaimAnalysis(StrictModel):
     queries: list[SearchQuery] = Field(min_length=1, max_length=MAX_INITIAL_QUERIES)
 
 
-class ClaudeClient(Protocol):
-    """Interface Component A (analyze) and C (rank) use for Claude."""
+class ClaimAnalyzer(Protocol):
+    """Interface Component A (intake/) uses for Claude claim analysis."""
 
     def analyze_claims(
         self, spec_text: str, claims_text: str, critical_date: date
     ) -> ClaimAnalysis: ...
+
+
+class CandidateRanker(Protocol):
+    """Interface Component C (report/) uses for Claude evidence ranking."""
 
     def rank_candidates(
         self,
@@ -45,7 +49,11 @@ class ClaudeClient(Protocol):
 
 
 class FakeClaude:
-    """Returns canned valid models. Never opens a network connection."""
+    """Returns canned valid models. Never opens a network connection.
+
+    Implements both ClaimAnalyzer and CandidateRanker so one fake serves
+    Component A and Component C tests.
+    """
 
     def analyze_claims(
         self, spec_text: str, claims_text: str, critical_date: date
@@ -56,7 +64,7 @@ class FakeClaude:
         into the result and must not log them.
         """
         # ASSUMPTION: a hardcoded widget claim is enough for tests.
-        # INCOMPLETE: production needs a real ClaudeClient that calls Anthropic.
+        # INCOMPLETE: production needs a real ClaimAnalyzer that calls Anthropic.
         # critical_date is unused here; a real client should pass it in the prompt.
         return ClaimAnalysis(
             limitations=[
