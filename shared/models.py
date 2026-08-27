@@ -20,6 +20,7 @@ from shared.bounds import (
     MAX_QUERY_TEXT_LENGTH,
     MAX_SNIPPET_LENGTH,
     MAX_SYNONYMS_PER_CONCEPT,
+    MAX_TOTAL_QUERIES,
     MAX_UNCERTAINTY_NOTES,
 )
 
@@ -58,6 +59,26 @@ class SearchQuery(StrictModel):
     limitation_ids: list[IdStr] = Field(min_length=1, max_length=MAX_CLAIM_LIMITATIONS)
 
 
+def _require_unique(items: list[object], label: str) -> None:
+    if len(set(items)) != len(items):
+        raise ValueError(f"{label} must be unique")
+
+
+def _check_query_limitation_links(
+    queries: list[SearchQuery], known_limitation_ids: set[str]
+) -> None:
+    """Each query's limitation_ids must be unique and exist on the plan."""
+    for query in queries:
+        # A query should not list the same limitation twice: ["L1", "L1"].
+        if len(query.limitation_ids) != len(set(query.limitation_ids)):
+            raise ValueError(f"query {query.id} has duplicate limitation ids")
+        # Every linked id must exist on this message; "Q1" cannot point at "L9"
+        # if there is no limitation with that id.
+        unknown = set(query.limitation_ids) - known_limitation_ids
+        if unknown:
+            raise ValueError(f"query {query.id} references unknown limitation ids")
+
+
 class SearchPlanMessage(StrictModel):
     job_id: str = Field(min_length=1, max_length=64)
     # UNCERTAIN: date-only, no timezone. Not rejected if it is in the future.
@@ -72,32 +93,11 @@ class SearchPlanMessage(StrictModel):
     @model_validator(mode="after")
     def ids_must_be_unique_and_linked(self) -> Self:
         # Reject two limitations that both claim the same id (e.g. two "L1"s).
-        # set() drops duplicates, so a shorter set means an id was repeated.
         limitation_ids = [item.id for item in self.limitations]
-        if len(set(limitation_ids)) != len(limitation_ids):
-            raise ValueError("limitation ids must be unique")
-
-        # Same uniqueness check for query ids (e.g. two "Q1"s).
-        query_ids = [item.id for item in self.queries]
-        if len(set(query_ids)) != len(query_ids):
-            raise ValueError("query ids must be unique")
-
-        known = set(limitation_ids)
-        for query in self.queries:
-            # A query should not list the same limitation twice: ["L1", "L1"].
-            if len(query.limitation_ids) != len(set(query.limitation_ids)):
-                raise ValueError(f"query {query.id} has duplicate limitation ids")
-            # Every linked id must exist on this message; "Q1" cannot point at "L9"
-            # if there is no limitation with that id.
-            unknown = set(query.limitation_ids) - known
-            if unknown:
-                raise ValueError(f"query {query.id} references unknown limitation ids")
+        _require_unique(limitation_ids, "limitation ids")
+        _require_unique([item.id for item in self.queries], "query ids")
+        _check_query_limitation_links(self.queries, set(limitation_ids))
         return self
-
-
-def _require_unique(items: list[object], label: str) -> None:
-    if len(set(items)) != len(items):
-        raise ValueError(f"{label} must be unique")
 
 
 # -----------------------------------------------------------------------------
@@ -119,42 +119,96 @@ class Candidate(StrictModel):
     published_on: date | None = None
     snippet: str = Field(min_length=1, max_length=MAX_SNIPPET_LENGTH)
     date_check: DateCheck
-    # FOLLOW-UP (spec §8): move this ceiling to Component B's total query budget.
-    query_ids: list[IdStr] = Field(min_length=1, max_length=MAX_INITIAL_QUERIES)
-    limitation_ids: list[IdStr] = Field(min_length=1, max_length=MAX_CLAIM_LIMITATIONS)
-    # INCOMPLETE: ids are not checked against the original SearchPlanMessage here.
-    # Component B/C must keep those ids consistent when they build this object.
+    # Provenance only: which executed queries found this URL. Intended
+    # limitations come from SearchQuery.limitation_ids on the effective plan,
+    # not from this row (spec §8). Batch validation checks these ids exist.
+    query_ids: list[IdStr] = Field(min_length=1, max_length=MAX_TOTAL_QUERIES)
 
     @model_validator(mode="after")
     def date_and_ids_must_line_up(self) -> Self:
         _require_unique(self.query_ids, "query ids")
-        _require_unique(self.limitation_ids, "limitation ids")
         # VERIFIED / AFTER_CRITICAL_DATE need a date; UNKNOWN may omit it.
         if self.date_check != DateCheck.UNKNOWN and self.published_on is None:
             raise ValueError("published_on is required unless date_check is unknown")
         return self
 
 
+class EffectiveSearchPlan(StrictModel):
+    """Original A→B plan plus follow-up queries B actually ran."""
+
+    original: SearchPlanMessage
+    # Cap is the leftover total budget if A used all 12 initial slots.
+    followup_queries: list[SearchQuery] = Field(
+        default_factory=list,
+        max_length=MAX_TOTAL_QUERIES - MAX_INITIAL_QUERIES,
+    )
+
+    @property
+    def job_id(self) -> str:
+        return self.original.job_id
+
+    def all_query_ids(self) -> set[str]:
+        return {item.id for item in self.original.queries} | {
+            item.id for item in self.followup_queries
+        }
+
+    @model_validator(mode="after")
+    def followups_must_be_unique_and_linked(self) -> Self:
+        """Reuse the plan's limitation-link rules across original + follow-ups."""
+        known = {item.id for item in self.original.limitations}
+        _check_query_limitation_links(self.followup_queries, known)
+        # Follow-up ids must not collide with each other or with A's queries.
+        _require_unique(
+            [item.id for item in self.original.queries]
+            + [item.id for item in self.followup_queries],
+            "query ids",
+        )
+        if len(self.original.queries) + len(self.followup_queries) > MAX_TOTAL_QUERIES:
+            raise ValueError("effective plan exceeds total query budget")
+        return self
+
+
 class SearchCacheTotals(StrictModel):
     # UNCERTAIN: cache_hits + cache_misses is not required to equal searches_run
     # (a search can fail without a cache result).
-    # FOLLOW-UP (spec §8): these ceilings should use the total search budget,
-    # not the initial-query cap. Using MAX_INITIAL_QUERIES until that bound exists.
-    searches_run: int = Field(ge=0, le=MAX_INITIAL_QUERIES)
-    cache_hits: int = Field(ge=0, le=MAX_INITIAL_QUERIES)
-    cache_misses: int = Field(ge=0, le=MAX_INITIAL_QUERIES)
+    searches_run: int = Field(ge=0, le=MAX_TOTAL_QUERIES)
+    cache_hits: int = Field(ge=0, le=MAX_TOTAL_QUERIES)
+    cache_misses: int = Field(ge=0, le=MAX_TOTAL_QUERIES)
 
 
 class CandidateBatchMessage(StrictModel):
-    job_id: str = Field(min_length=1, max_length=64)
+    # Job id lives on plan.original; Component C reads it from there.
+    plan: EffectiveSearchPlan
     # Empty list is allowed: a valid search can find nothing.
     candidates: list[Candidate] = Field(max_length=MAX_CANDIDATES)
     totals: SearchCacheTotals
+    # Sanitized terminal-failure outcome. None means search completed.
+    # ASSUMPTION: short snake_case tokens like search_failed, matching
+    # Component A's analysis_failed / publish_failed style.
+    error_code: str | None = Field(default=None, max_length=32)
     # INCOMPLETE: payload byte size is not checked here (same follow-up as Task 7).
 
+    @field_validator("error_code")
+    @classmethod
+    def error_code_is_safe_token(cls, value: str | None) -> str | None:
+        # Reject anything that could carry document or provider text.
+        if value is None:
+            return None
+        if not value.isascii() or not value.replace("_", "").isalnum() or value != value.lower():
+            raise ValueError("error_code must be a short lowercase token")
+        return value
+
     @model_validator(mode="after")
-    def urls_must_be_unique(self) -> Self:
+    def batch_must_line_up_with_plan(self) -> Self:
+        """Unique URLs, known query ids, and no candidates on terminal failure."""
         _require_unique([item.url for item in self.candidates], "candidate urls")
+        known_query_ids = self.plan.all_query_ids()
+        for item in self.candidates:
+            unknown = set(item.query_ids) - known_query_ids
+            if unknown:
+                raise ValueError("candidate query ids must exist in the effective plan")
+        if self.error_code is not None and self.candidates:
+            raise ValueError("terminal failure must not include candidates")
         return self
 
 

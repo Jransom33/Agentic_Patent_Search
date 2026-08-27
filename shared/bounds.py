@@ -25,8 +25,8 @@ MAX_CLAIM_LIMITATIONS = 20
 MAX_LIMITATION_TEXT_LENGTH = 500
 MAX_CONCEPTS = 30
 MAX_SYNONYMS_PER_CONCEPT = 8
-# Component A's initial-query cap. Component B's larger total search budget
-# is defined separately later (spec §8). Do not reuse this as that budget.
+# Component A's initial-query cap. Do not reuse this as Component B's total
+# search budget (MAX_TOTAL_QUERIES below).
 MAX_INITIAL_QUERIES = 12
 MAX_QUERY_TEXT_LENGTH = 300
 
@@ -35,6 +35,16 @@ MAX_CANDIDATES = 25
 MAX_SNIPPET_LENGTH = 500
 MAX_EXA_RESULTS_PER_QUERY = 10
 MAX_CONCURRENCY = 4
+# Spec §8: Component B hard ceilings. Claude may finish early but cannot
+# override these. Follow-up count is per continuation decision, not total.
+MAX_TOTAL_QUERIES = 40
+MAX_SEARCH_PASSES = 8
+MAX_CONTINUATION_DECISIONS = 7
+MIN_FOLLOWUP_QUERIES = 3
+MAX_FOLLOWUP_QUERIES = 6
+# ASSUMPTION: 24h is enough for a class demo to show miss-then-hit on a
+# repeated search. Not a production cache policy.
+REDIS_CACHE_TTL_SECONDS = 86_400
 
 # --- Ranking bounds (Component C / reports) ---
 MAX_CONTENT_FETCHES = 8
@@ -48,5 +58,6 @@ MAX_PUBSUB_PAYLOAD_BYTES = 256_000
 MAX_UPLOAD_BYTES = 5_000_000
 MAX_RETRIES = 3
 
-# INCOMPLETE: no Redis TTL, PDF page cap, or per-file size yet.
-# FOLLOW-UP: Task 3+ models should enforce these; this module only defines them.
+# INCOMPLETE: no PDF page cap or per-file size yet.
+# FOLLOW-UP: later models should enforce the new search budgets; this module
+# only defines them.

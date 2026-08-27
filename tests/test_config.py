@@ -2,7 +2,7 @@
 
 import pytest
 
-from shared.config import REQUIRED_NAMES, load_settings
+from shared.config import REQUIRED_NAMES, load_search_settings, load_settings
 
 _ENV = {
     "GCP_PROJECT": "demo-project",
@@ -51,3 +51,17 @@ def test_repr_masks_keys_and_dsn(monkeypatch):
     assert "secret" not in text
     assert "sk-ant-test-key" not in text
     assert "exa-test-key" not in text
+
+
+def test_search_settings_load_without_cloud_sql(monkeypatch):
+    """Component B must start without database credentials (spec §8)."""
+    _clear_required(monkeypatch)
+    for name, value in _ENV.items():
+        if name != "CLOUD_SQL_DSN":
+            monkeypatch.setenv(name, value)
+    settings = load_search_settings()
+    assert settings.redis_host == "localhost"
+    assert not hasattr(settings, "cloud_sql_dsn")
+    text = repr(settings)
+    assert "anthropic_api_key='***'" in text
+    assert "sk-ant-test-key" not in text

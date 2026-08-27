@@ -8,6 +8,7 @@ from shared.models import (
     ClaimLimitation,
     Concept,
     DateCheck,
+    EffectiveSearchPlan,
     RankedEvidence,
     Report,
     SearchCacheTotals,
@@ -40,16 +41,22 @@ def candidate(**overrides) -> Candidate:
         snippet="A widget used as prior art in tests.",
         date_check=DateCheck.VERIFIED,
         query_ids=["Q1"],
-        limitation_ids=["L1"],
     )
     data.update(overrides)
     return Candidate(**data)
 
 
+def effective_plan(**overrides) -> EffectiveSearchPlan:
+    """Original plan with no follow-ups unless overridden."""
+    data = dict(original=search_plan(), followup_queries=[])
+    data.update(overrides)
+    return EffectiveSearchPlan(**data)
+
+
 def candidate_batch(**overrides) -> CandidateBatchMessage:
-    """Minimal valid B→C candidate batch."""
+    """Minimal valid B→C candidate batch. Job id lives on plan.original."""
     data = dict(
-        job_id="job1",
+        plan=effective_plan(),
         candidates=[candidate()],
         totals=SearchCacheTotals(searches_run=1, cache_hits=0, cache_misses=1),
     )

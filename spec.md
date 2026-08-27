@@ -1,6 +1,6 @@
 # Agentic Prior Art Search Assistant — High-Level Plan
 
-Status: shared foundation and Component A implemented (Sections 5–7); Components B and C pending
+Status: shared foundation through Section 8 and Component A implemented; Components B and C pending
 Language: Python  
 Cloud: Google Cloud Platform (GCP)
 
@@ -109,26 +109,33 @@ report structure and avoids duplicated code.
 
 The following foundation work is complete:
 
-- `shared/bounds.py` defines job states and limits for claims, queries,
-  candidates, content retrieval, uploads, retries, concurrency, and messages.
+- `shared/bounds.py` defines job states and limits for claims, queries, search
+  passes, continuation decisions, candidates, content retrieval, uploads,
+  retries, concurrency, messages, and Redis cache lifetime.
 - `shared/models.py` defines validated search-plan, candidate-batch, and report
-  contracts. It rejects extra fields, duplicate IDs, broken limitation links,
-  duplicate candidate URLs, invalid date states, duplicate report ranks, and
+  contracts, including Component B's effective search plan and terminal-failure
+  outcome. It rejects extra fields, duplicate IDs, broken limitation links,
+  candidate provenance missing from the effective plan, duplicate candidate
+  URLs, invalid date states, unsafe error codes, duplicate report ranks, and
   replacement of the required human-review disclaimer.
 - `shared/config.py` loads required settings from environment variables or an
   optional `.env` file, fails on missing values, and masks API keys and the
-  database DSN in its representation.
+  database DSN in its representation. Component B has a separate settings
+  loader that does not read or expose the Cloud SQL DSN.
 - `shared/logging.py` emits bounded lifecycle fields and redacts multiline,
   oversized, credential-like, and configured secret values.
 - `shared/messaging.py` serializes pydantic models as bounded UTF-8 JSON and
   provides Publisher and Subscriber interfaces plus an in-memory FIFO broker.
 - `shared/db.py` defines the PostgreSQL jobs/reports schema, the JobStore
   interface, and an idempotent in-memory implementation for local use.
-- `shared/providers/claude.py` and `shared/providers/exa.py` define narrow
-  provider interfaces and deterministic fakes that do not call paid APIs.
-  The Claude interfaces are split per consumer: `ClaimAnalyzer` for
-  Component A and `CandidateRanker` for Component C, so each component's
-  production adapter implements only the operation it uses.
+- `shared/providers/claude.py` defines narrow interfaces for each Claude
+  consumer: `ClaimAnalyzer` for Component A, `SearchDecider` for Component B,
+  and `CandidateRanker` for Component C. Its deterministic fake supports all
+  three without calling paid APIs.
+- `shared/providers/exa.py` defines the narrow Exa interface, deterministic
+  fake, and production `exa-py` client. The production client bounds search
+  results and content fetches, maps provider responses into shared types, and
+  truncates snippets and retrieved text.
 - The project uses Python 3.12+, a local `.venv`, and dependencies listed in
   `requirements.txt`.
 
@@ -231,36 +238,44 @@ flowchart TD
     ReadDatabase --> Respond[Return current result]
 ```
 
-## 8. Foundation Updates Required Before Component B (NOT COMPLETED)
+## 8. Foundation Updates Required Before Component B (COMPLETED)
 
-The existing foundation must be extended before implementing the new Component
-B design:
+The existing foundation has been extended for the new Component B design:
 
-- `shared/bounds.py` must allow at most 40 total queries, eight search passes,
+- `shared/bounds.py` allows at most 40 total queries, eight search passes,
   seven Claude continuation decisions, and three to six follow-up queries per
-  decision. It must also define a finite Redis cache TTL.
-- `shared/models.py` must make `CandidateBatchMessage` carry the effective
+  decision. It also defines a finite 24-hour Redis cache TTL.
+- `shared/models.py` makes `CandidateBatchMessage` carry the effective
   search plan, meaning the original plan plus every follow-up query actually
   executed by Component B. The job ID travels inside that plan, so Component C
   reads it from there.
-- `CandidateBatchMessage` must also carry a sanitized terminal-failure outcome
+- `CandidateBatchMessage` also carries a sanitized terminal-failure error code
   so Component C can mark a job failed when Component B's search permanently
   fails.
-- Candidate query IDs must exist in that effective plan. A query's intended
+- Candidate query IDs must exist in that effective plan. Candidates no longer
+  duplicate limitation IDs: a query's intended
   limitations must be derived from its `SearchQuery.limitation_ids` mapping
   rather than treated as independent proof that a document contains those
   limitations. Component C will make the actual evidence determination.
-- `shared/providers/claude.py` must add a separate narrow search-decision
-  interface for Component B (alongside `ClaimAnalyzer` and `CandidateRanker`)
-  and a deterministic fake. Its production implementation will use
-  `langchain-anthropic` with validated structured output.
-- A real Exa API client is needed for production; Component B is its primary
-  consumer. Tests keep using the deterministic fake.
-- Component B must load only the Pub/Sub, Redis, Exa, Anthropic, and logging
-  settings it needs; it must not receive Cloud SQL credentials.
+- `shared/providers/claude.py` adds the separate `SearchDecider` interface,
+  validated `SearchDecision` response, and deterministic fake for Component B.
+  The production implementation will use
+  `langchain-anthropic` with validated structured output inside `search/`.
+- `shared/providers/exa.py` includes a production `ExaApi` implementation
+  using `exa-py`; tests continue to use the deterministic fake.
+- `shared/config.py` provides `SearchSettings` and `load_search_settings()`,
+  which load only the Pub/Sub, Redis, Exa, Anthropic, and logging settings
+  Component B needs and do not load the Cloud SQL DSN.
 
-The `SearchDecision` structure and iterative loop belong inside Component B,
-not the shared foundation, because no other component needs them.
+The `SearchDecision` data contract lives beside the narrow shared Claude
+interface for Component B (alongside `ClaimAnalyzer` and `CandidateRanker`)
+so the fake and future production adapter return the same validated type. The
+iterative loop and its state still belong inside Component B.
+
+Automated tests cover effective-plan validation, query provenance, terminal
+failures, the 40-query totals bound, fake finish/continue decisions, and
+Component B settings without Cloud SQL credentials. The full suite currently
+passes without paid API calls.
 
 ## 9. Component B — Search Orchestration and Retrieval
 
@@ -398,8 +413,10 @@ Component B publishes a candidate message containing:
   queries;
 - candidate titles, URLs, dates, and short snippets;
 - date-verification state;
-- the query IDs that actually found each candidate; and
-- aggregate search and cache information.
+- the query IDs that actually found each candidate;
+- aggregate search and cache information; and
+- either a successful candidate list or a sanitized terminal-failure code with
+  no candidates.
 
 The effective plan is the source of query-to-limitation search intent.
 Component C must independently determine whether a candidate actually

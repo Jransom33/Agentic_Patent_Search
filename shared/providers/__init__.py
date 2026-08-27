@@ -1,1 +1,1 @@
-# Narrow Claude and Exa interfaces plus fakes. No network clients here.
+# Narrow Claude and Exa interfaces, fakes, and the production ExaApi client.
