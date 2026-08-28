@@ -77,9 +77,8 @@ class SearchDecision(StrictModel):
     """
 
     action: SearchAction
-    # Which limitations still lack good candidates. Free text, but bounded.
-    # ASSUMPTION: 200 chars per gap note is enough; not a bounds.py constant.
-    coverage_gaps: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(
+    # Which limitations still lack good candidates.
+    coverage_gaps: list[Annotated[str, Field(min_length=1)]] = Field(
         default_factory=list, max_length=MAX_CLAIM_LIMITATIONS
     )
     followup_queries: list[SearchQuery] = Field(default_factory=list)
