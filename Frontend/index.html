@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Prior Art</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Playfair+Display:ital,wght@0,500;0,600;1,500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="nav">
+      <a class="brand" href="/">Prior Art</a>
+      <nav>
+        <a href="#top">Home</a>
+        <a href="#search">Search</a>
+        <a href="#findings">Findings</a>
+      </nav>
+    </header>
+
+    <main id="top">
+      <section class="hero" id="search">
+        <h1>Prior art search,<br />powered by agents.</h1>
+        <p class="subhead">
+          Submit a specification, claims, and a critical date. We search the
+          public record and return ranked evidence for human review.
+        </p>
+
+        <form class="bar" id="job-form">
+          <p class="welcome">
+            <span class="spark" aria-hidden="true">✦</span>
+            Welcome to Prior Art — drop in a spec, claims, and a date.
+          </p>
+          <p class="status" id="status" hidden></p>
+
+          <div class="bar-row">
+            <label class="pill">
+              <input
+                id="specification"
+                name="specification"
+                type="file"
+                accept=".pdf,application/pdf"
+              />
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M7 3h7l5 5v13H7zM14 3v5h5"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                />
+              </svg>
+              <span id="spec-label">Specification</span>
+            </label>
+
+            <label class="pill">
+              <input
+                id="claims"
+                name="claims"
+                type="file"
+                accept=".txt,text/plain"
+              />
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M7 5h10M7 9h10M7 13h6M7 3h10a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                />
+              </svg>
+              <span id="claims-label">Claims</span>
+            </label>
+
+            <label class="pill date-pill">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect
+                  x="4"
+                  y="5"
+                  width="16"
+                  height="15"
+                  rx="2"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                />
+                <path
+                  d="M8 3v4M16 3v4M4 10h16"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                />
+              </svg>
+              <input id="critical-date" name="critical_date" type="date" required />
+            </label>
+
+            <button class="send" type="submit" id="submit" aria-label="Start search">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M12 19V6M6 11l6-6 6 6"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.1"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </button>
+          </div>
+        </form>
+      </section>
+
+      <div class="stipple" aria-hidden="true"></div>
+
+      <section class="lower" id="findings">
+        <div class="lower-intro">
+          <h2>A clearer path through the public record</h2>
+          <p>
+            Ranked candidates, publication dates, and supporting passages —
+            always a decision-support aid. A human must make any legal
+            determination.
+          </p>
+        </div>
+        <div id="report"></div>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

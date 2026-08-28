@@ -147,6 +147,7 @@ def test_claude_failure_marks_job_failed(intake):
     assert response.status_code == 502
     job_id = response.json()["detail"]["job_id"]
     assert response.json()["detail"]["error_code"] == "analysis_failed"
+    assert response.json()["detail"]["error"] == "Analysis failed (RuntimeError)"
     assert store.get_job(job_id).status == JobStatus.FAILED
     assert broker.receive(TOPIC, SearchPlanMessage) is None
 
@@ -163,5 +164,6 @@ def test_publish_failure_marks_job_failed(intake):
     assert response.status_code == 502
     job_id = response.json()["detail"]["job_id"]
     assert response.json()["detail"]["error_code"] == "publish_failed"
+    assert response.json()["detail"]["error"] == "Publishing failed (RuntimeError)"
     assert store.get_job(job_id).status == JobStatus.FAILED
     assert "report" not in client.get(f"/jobs/{job_id}").json()

@@ -9,6 +9,8 @@ fakes. Only bounded lifecycle events are logged — never document text.
 import time
 from typing import NoReturn
 
+from pydantic import ValidationError
+
 from intake.extraction import ExtractedInputs
 from shared.bounds import JobStatus
 from shared.db import JobStore
@@ -27,19 +29,43 @@ class IntakeFailedError(Exception):
     report which job failed without exposing provider details.
     """
 
-    def __init__(self, job_id: str, error_code: str) -> None:
+    def __init__(self, job_id: str, error_code: str, error: str) -> None:
         super().__init__(error_code)
         self.job_id = job_id
         self.error_code = error_code
+        self.error = error
 
 
-def _fail(store: JobStore, job_id: str, error_code: str) -> NoReturn:
+def _safe_analysis_error(exc: Exception) -> str:
+    """Describe the failure without returning provider or document content."""
+    if isinstance(exc, ValidationError):
+        locations = [
+            ".".join(map(str, item["loc"])) or "response"
+            for item in exc.errors(include_input=False, include_context=False)
+        ]
+        # Keep the generated diagnostic within shared.logging's 80-char field
+        # bound so it is visible rather than redacted.
+        return f"Claude response validation failed: {', '.join(locations[:5])}"[:80]
+    if str(exc) == "Claude did not return a valid structured claim analysis":
+        return str(exc)
+    return f"Analysis failed ({type(exc).__name__})"
+
+
+def _fail(
+    store: JobStore, job_id: str, error_code: str, error: str
+) -> NoReturn:
     # Shared failure path: persist the failed state, log the safe code, and
     # abort the pipeline. error_code is a short token, never an exception
     # message that might contain document or provider text.
     store.set_status(job_id, JobStatus.FAILED, error_code=error_code)
-    log_event(component=COMPONENT, event="job_failed", job_id=job_id, error_code=error_code)
-    raise IntakeFailedError(job_id, error_code)
+    log_event(
+        component=COMPONENT,
+        event="job_failed",
+        job_id=job_id,
+        error_code=error_code,
+        error_detail=error,
+    )
+    raise IntakeFailedError(job_id, error_code, error)
 
 
 def run_intake(
@@ -76,17 +102,22 @@ def run_intake(
             concepts=analysis.concepts,
             queries=analysis.queries,
         )
-    except Exception:
+    except Exception as exc:
         # ASSUMPTION: one code covers both a provider error and an invalid
         # structured response; the log event is enough to tell them apart later.
         # FOLLOW-UP: spec §11 suggests bounded retries (MAX_RETRIES) for
         # temporary provider failures; this version fails on the first error.
-        _fail(store, job_id, "analysis_failed")
+        _fail(store, job_id, "analysis_failed", _safe_analysis_error(exc))
 
     try:
         publisher.publish(topic, plan)
-    except Exception:
-        _fail(store, job_id, "publish_failed")
+    except Exception as exc:
+        _fail(
+            store,
+            job_id,
+            "publish_failed",
+            f"Publishing failed ({type(exc).__name__})",
+        )
 
     # Publish confirmed: hand the job to Component B and report the id.
     store.set_status(job_id, JobStatus.SEARCHING)

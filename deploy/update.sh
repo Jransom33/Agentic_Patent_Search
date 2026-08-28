@@ -35,7 +35,8 @@ for comp in "${COMPONENTS[@]}"; do
   GC compute ssh "$vm" --zone="$ZONE" --command="
     sudo tar -xzf /tmp/agentic_patents.tar.gz -C $REMOTE_DIR &&
     sudo chown -R $SERVICE_USER: $REMOTE_DIR &&
-    sudo -u $SERVICE_USER $REMOTE_DIR/.venv/bin/pip install -q -r $REMOTE_DIR/requirements.txt &&
+    cd $REMOTE_DIR &&
+    sudo -u $SERVICE_USER .venv/bin/pip install -q -r requirements.txt &&
     (sudo systemctl restart patents-$comp \
       || echo '>>> restart failed; is /etc/agentic-patents/$comp.env filled in?')"
 done

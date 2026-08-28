@@ -74,7 +74,11 @@ async def submit_job(
         # can still be polled. 502: our upstream step failed, not their input.
         raise HTTPException(
             status_code=502,
-            detail={"job_id": exc.job_id, "error_code": exc.error_code},
+            detail={
+                "job_id": exc.job_id,
+                "error_code": exc.error_code,
+                "error": exc.error,
+            },
         )
 
     return {"job_id": job_id, "status": JobStatus.SEARCHING}

@@ -1,7 +1,7 @@
 """Safe structured logs for all three components.
 
-Each line has component, job_id, lifecycle event, duration_ms, and error_code
-(spec §11). Values that look like document text, prompts, or credentials are
+Each line has bounded lifecycle fields and may include a sanitized error
+detail. Values that look like document text, prompts, or credentials are
 replaced with [redacted] (spec §12).
 """
 
@@ -52,8 +52,10 @@ def log_event(
     job_id: str | None = None,
     duration_ms: int | float | None = None,
     error_code: str | None = None,
+    error_detail: str | None = None,
 ) -> None:
-    # Only these fields are allowed. Callers cannot pass prompt/text extras.
+    # Only these bounded fields are allowed. Callers cannot pass prompt/text
+    # extras; error_detail is intended for already-sanitized diagnostics.
     # FOLLOW-UP: Component A/B/C should call this at each lifecycle step
     # (analyzing, searching, ranking, completed, failed).
     parts = [
@@ -68,4 +70,7 @@ def log_event(
     cleaned_error = _clean(error_code)
     if cleaned_error is not None:
         parts.append(f"error_code={cleaned_error}")
+    cleaned_detail = _clean(error_detail)
+    if cleaned_detail is not None:
+        parts.append(f"error_detail={cleaned_detail}")
     _logger.info(" ".join(parts))
