@@ -1,7 +1,7 @@
 """Job and report storage used by Components A and C.
 
-No uploaded specification or claims text is stored. Cloud SQL wiring comes
-later; tests and local runs can use InMemoryJobStore.
+No uploaded specification or claims text is stored. Tests and local runs use
+InMemoryJobStore; production uses shared.cloudsql.CloudSqlJobStore.
 """
 
 import uuid
@@ -26,8 +26,8 @@ CREATE TABLE IF NOT EXISTS reports (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 """
-# INCOMPLETE: nothing runs this SQL yet. The Cloud SQL adapter should execute
-# it on startup. InMemoryJobStore does not use these tables.
+# CloudSqlJobStore executes this idempotent SQL on startup. InMemoryJobStore
+# does not use these tables.
 
 
 class JobNotFoundError(KeyError):
@@ -44,8 +44,8 @@ class JobRecord:
 class JobStore(Protocol):
     """Interface Components A and C use to create jobs and store reports.
 
-    InMemoryJobStore implements this for tests. A Cloud SQL class will
-    implement the same methods later.
+    InMemoryJobStore implements this for tests and CloudSqlJobStore for
+    production.
     """
     def create_job(self) -> str: ...
     def set_status(
@@ -54,6 +54,7 @@ class JobStore(Protocol):
     def get_job(self, job_id: str) -> JobRecord | None: ...
     def save_report(self, job_id: str, report: Report) -> None: ...
     def get_report(self, job_id: str) -> Report | None: ...
+    def complete_job(self, job_id: str, report: Report) -> None: ...
 
 
 class InMemoryJobStore:
@@ -93,8 +94,8 @@ class InMemoryJobStore:
         Duplicate Pub/Sub deliveries must not create a second report.
         """
         # ASSUMPTION: first write wins; a later different report is dropped.
-        # INCOMPLETE: does not set status to completed; Component C should call
-        # set_status separately. Does not check report.job_id == job_id.
+        # UNCERTAIN: does not check report.job_id == job_id; callers pass both
+        # from the same batch today.
         if job_id not in self._jobs:
             raise JobNotFoundError(job_id)
         if job_id in self._reports:
@@ -104,3 +105,12 @@ class InMemoryJobStore:
     def get_report(self, job_id: str) -> Report | None:
         """Return the stored report, or None if Component C has not saved one."""
         return self._reports.get(job_id)
+
+    def complete_job(self, job_id: str, report: Report) -> None:
+        """Store the report and mark the job completed as one step (spec §11).
+
+        In memory two dict writes cannot be observed half-done by this
+        single-threaded process; only Cloud SQL needs a real transaction.
+        """
+        self.save_report(job_id, report)
+        self.set_status(job_id, JobStatus.COMPLETED)

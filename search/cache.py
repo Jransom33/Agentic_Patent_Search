@@ -17,7 +17,12 @@ from shared.providers.exa import SearchHit
 
 # ASSUMPTION: default Memorystore port, no AUTH/TLS. SearchSettings only
 # exposes REDIS_HOST, so a passworded instance would need a later config field.
+# Provisioning must create Memorystore with AUTH disabled and no in-transit
+# encryption to match (its defaults), on the VM's private network.
 _REDIS_PORT = 6379
+# Finite socket timeouts so a Redis outage stalls the worker for seconds, not
+# forever; the worker already treats cache errors as retry/best-effort.
+_REDIS_TIMEOUT_SECONDS = 5
 
 
 def _query_key(query_text: str, critical_date: date) -> str:
@@ -151,11 +156,15 @@ class RedisSearchCache:
 
     def __init__(self, host: str, ttl_seconds: int = REDIS_CACHE_TTL_SECONDS) -> None:
         # Import here so FakeRedis tests do not need a live Redis client loaded.
-        # INCOMPLETE: no socket timeout or AUTH; Memorystore in the class demo
-        # is expected to be reachable on the default port with no password.
         import redis
 
-        self._client = redis.Redis(host=host, port=_REDIS_PORT, decode_responses=True)
+        self._client = redis.Redis(
+            host=host,
+            port=_REDIS_PORT,
+            decode_responses=True,
+            socket_timeout=_REDIS_TIMEOUT_SECONDS,
+            socket_connect_timeout=_REDIS_TIMEOUT_SECONDS,
+        )
         self._ttl = ttl_seconds
 
     def get_hits(self, query_text: str, critical_date: date) -> list[SearchHit] | None:

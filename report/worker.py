@@ -2,9 +2,8 @@
 
 Implements the spec §10 sequence around the pipeline: skip jobs that already
 have a report, mark Component B terminal failures, otherwise rank and persist.
-The in-memory broker has no real ack (it pops on receive); the GCP adapter in
-spec §11 must withhold acknowledgement until the report is stored or the job
-is marked failed.
+The worker acks its input only after handle_batch succeeds, so a crash or
+failure before the report is stored leads to redelivery, not a lost batch.
 """
 
 import time
@@ -41,8 +40,8 @@ def handle_batch(
     job_id = batch.plan.job_id
 
     # Duplicate Pub/Sub delivery: ranking already produced a stored report.
-    # FOLLOW-UP: a crash after save_report but before set_status(completed)
-    # leaves the job in ranking; this skip will not heal that status.
+    # complete_job stores the report and completed status atomically, so a
+    # skipped duplicate can never find a stored report on a job still ranking.
     if store.get_report(job_id) is not None:
         log_event(component=COMPONENT, event="duplicate_acked", job_id=job_id)
         return
@@ -72,9 +71,9 @@ def handle_batch(
         )
         return
 
-    # save_report is first-write-wins, so a racing duplicate cannot replace it.
-    store.save_report(job_id, report)
-    store.set_status(job_id, JobStatus.COMPLETED)
+    # One atomic step (spec §11): report stored and job completed together,
+    # and the insert stays first-write-wins against a racing duplicate.
+    store.complete_job(job_id, report)
     log_event(
         component=COMPONENT,
         event="report_stored",
@@ -91,19 +90,33 @@ def run_worker(
     ranker: CandidateRanker,
     exa: ExaClient,
 ) -> None:
-    """Poll the candidates topic forever and handle each message.
+    """Poll the candidates source forever and settle each message.
 
-    INCOMPLETE: InMemoryBroker.receive pops immediately, so a crash after
-    receive but before save_report drops the batch. Real Pub/Sub ack/nack
-    is §11.
+    `candidates_topic` is the InMemoryBroker topic locally and the Pub/Sub
+    subscription name in production. Ack only after handle_batch returns
+    (spec §14); on failure, nack for redelivery and keep polling so one bad
+    batch no longer kills the worker.
+
+    UNCERTAIN: a later duplicate of a ranking_failed job has no report, so
+    this worker will rank again rather than treating failed as terminal.
     """
     while True:
-        batch = subscriber.receive(candidates_topic, CandidateBatchMessage)
-        if batch is None:
+        envelope = subscriber.pull(candidates_topic, CandidateBatchMessage)
+        if envelope is None:
             time.sleep(_IDLE_SLEEP_SECONDS)
             continue
-        # FOLLOW-UP: a poison message or store failure currently crashes the
-        # process. The GCP adapter should nack and keep polling.
-        # UNCERTAIN: a later duplicate of a ranking_failed job has no report,
-        # so this worker will rank again rather than treating failed as terminal.
-        handle_batch(batch, store=store, ranker=ranker, exa=exa)
+        try:
+            handle_batch(envelope.message, store=store, ranker=ranker, exa=exa)
+        except Exception:
+            # Transient store failure: redelivery retries it. The duplicate
+            # check keeps a retried batch from ranking twice.
+            # UNCERTAIN: a persistent failure redelivers until the Pub/Sub
+            # retention/dead-letter policy gives up; no in-process retry cap.
+            log_event(
+                component=COMPONENT,
+                event="handle_failed",
+                job_id=envelope.message.plan.job_id,
+            )
+            envelope.nack()
+            continue
+        envelope.ack()

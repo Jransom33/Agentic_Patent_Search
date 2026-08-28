@@ -524,6 +524,16 @@ in-memory fakes to GCP, after Components A–C work locally:
 - production wiring that selects real adapters while tests inject fakes; and
 - GCP resources and deployment of each process to its own Compute Engine VM.
 
+Known limitation of the Pub/Sub adapter's poison-message handling: a payload
+that can never decode is logged and acknowledged (dropped) so it does not
+redeliver forever, but the job it belonged to is silently orphaned — its job
+ID lives inside the unreadable payload, so no component can mark it failed,
+and the job sits in its last visible status until the user notices and
+resubmits. This should be nearly impossible because both publishers encode
+validated models with the shared codec. FOLLOW-UP: consider a stuck-job
+timeout sweep in Component A (marking jobs failed after too long in
+`searching` or `ranking`) or a Pub/Sub dead-letter topic.
+
 ## 12. High-Level Data Contracts
 
 Component A publishes a search-plan message containing:

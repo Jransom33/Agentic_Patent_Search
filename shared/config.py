@@ -6,17 +6,24 @@ from dataclasses import dataclass
 from dotenv import load_dotenv
 
 # Full set for Components A and C (they persist jobs/reports in Cloud SQL).
+# C pulls candidate batches, so the candidates subscription lives here too.
 REQUIRED_NAMES = (
     "GCP_PROJECT",
     "PUBSUB_SEARCH_PLANS_TOPIC",
     "PUBSUB_CANDIDATES_TOPIC",
+    "PUBSUB_CANDIDATES_SUBSCRIPTION",
     "CLOUD_SQL_DSN",
     "REDIS_HOST",
     "ANTHROPIC_API_KEY",
     "EXA_API_KEY",
 )
-# Component B must not receive Cloud SQL credentials (spec §8).
-SEARCH_REQUIRED_NAMES = tuple(name for name in REQUIRED_NAMES if name != "CLOUD_SQL_DSN")
+# Component B must not receive Cloud SQL credentials (spec §8). It pulls
+# search plans, not candidate batches, so it swaps subscription names.
+SEARCH_REQUIRED_NAMES = tuple(
+    name
+    for name in REQUIRED_NAMES
+    if name not in ("CLOUD_SQL_DSN", "PUBSUB_CANDIDATES_SUBSCRIPTION")
+) + ("PUBSUB_SEARCH_PLANS_SUBSCRIPTION",)
 
 
 def _read_required(names: tuple[str, ...]) -> dict[str, str]:
@@ -35,11 +42,23 @@ def _log_level() -> str:
     return os.environ.get("LOG_LEVEL", "INFO").strip() or "INFO"
 
 
+def app_env() -> str:
+    """Deployment switch read by the three entry points (spec §11).
+
+    'local' (the default) wires the in-memory fakes; 'gcp' wires the real
+    Pub/Sub, Cloud SQL, Redis, Exa, and Claude adapters. Tests never read
+    this; they inject fakes directly.
+    """
+    # ASSUMPTION: any value other than 'gcp' means a local run; no validation.
+    return os.environ.get("APP_ENV", "local").strip() or "local"
+
+
 @dataclass(frozen=True)
 class Settings:
     gcp_project: str
     pubsub_search_plans_topic: str
     pubsub_candidates_topic: str
+    pubsub_candidates_subscription: str
     cloud_sql_dsn: str
     redis_host: str
     anthropic_api_key: str
@@ -55,6 +74,7 @@ class Settings:
             f"gcp_project={self.gcp_project!r}, "
             f"pubsub_search_plans_topic={self.pubsub_search_plans_topic!r}, "
             f"pubsub_candidates_topic={self.pubsub_candidates_topic!r}, "
+            f"pubsub_candidates_subscription={self.pubsub_candidates_subscription!r}, "
             "cloud_sql_dsn='***', "
             f"redis_host={self.redis_host!r}, "
             "anthropic_api_key='***', "
@@ -69,6 +89,7 @@ class SearchSettings:
 
     gcp_project: str
     pubsub_search_plans_topic: str
+    pubsub_search_plans_subscription: str
     pubsub_candidates_topic: str
     redis_host: str
     anthropic_api_key: str
@@ -80,6 +101,7 @@ class SearchSettings:
             "SearchSettings("
             f"gcp_project={self.gcp_project!r}, "
             f"pubsub_search_plans_topic={self.pubsub_search_plans_topic!r}, "
+            f"pubsub_search_plans_subscription={self.pubsub_search_plans_subscription!r}, "
             f"pubsub_candidates_topic={self.pubsub_candidates_topic!r}, "
             f"redis_host={self.redis_host!r}, "
             "anthropic_api_key='***', "
@@ -95,6 +117,7 @@ def load_settings() -> Settings:
         gcp_project=values["GCP_PROJECT"],
         pubsub_search_plans_topic=values["PUBSUB_SEARCH_PLANS_TOPIC"],
         pubsub_candidates_topic=values["PUBSUB_CANDIDATES_TOPIC"],
+        pubsub_candidates_subscription=values["PUBSUB_CANDIDATES_SUBSCRIPTION"],
         cloud_sql_dsn=values["CLOUD_SQL_DSN"],
         redis_host=values["REDIS_HOST"],
         anthropic_api_key=values["ANTHROPIC_API_KEY"],
@@ -109,6 +132,7 @@ def load_search_settings() -> SearchSettings:
     return SearchSettings(
         gcp_project=values["GCP_PROJECT"],
         pubsub_search_plans_topic=values["PUBSUB_SEARCH_PLANS_TOPIC"],
+        pubsub_search_plans_subscription=values["PUBSUB_SEARCH_PLANS_SUBSCRIPTION"],
         pubsub_candidates_topic=values["PUBSUB_CANDIDATES_TOPIC"],
         redis_host=values["REDIS_HOST"],
         anthropic_api_key=values["ANTHROPIC_API_KEY"],

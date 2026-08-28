@@ -2,9 +2,8 @@
 
 Implements the spec §9 sequence around the loop: skip jobs that already
 published, run the search, publish the batch, then record a best-effort Redis
-completion key. The in-memory broker has no real ack (it pops on receive);
-the GCP adapter in spec §11 must withhold acknowledgement until publish
-succeeds.
+completion key. The worker acks its input only after handle_plan succeeds,
+so a crash or failure before publish leads to redelivery, not a lost plan.
 """
 
 import time
@@ -80,23 +79,37 @@ def run_worker(
     exa: ExaClient,
     decider: SearchDecider,
 ) -> None:
-    """Poll the search-plans topic forever and handle each message.
+    """Poll the search-plans source forever and settle each message.
 
-    INCOMPLETE: InMemoryBroker.receive pops immediately, so a crash after
-    receive but before publish drops the plan. Real Pub/Sub ack/nack is §11.
+    `plans_topic` is the InMemoryBroker topic locally and the Pub/Sub
+    subscription name in production. Ack only after handle_plan returns
+    (spec §14); on failure, nack for redelivery and keep polling so one bad
+    job no longer kills the worker.
     """
     while True:
-        plan = subscriber.receive(plans_topic, SearchPlanMessage)
-        if plan is None:
+        envelope = subscriber.pull(plans_topic, SearchPlanMessage)
+        if envelope is None:
             time.sleep(_IDLE_SLEEP_SECONDS)
             continue
-        # FOLLOW-UP: a poison message or publish failure currently crashes the
-        # process. The GCP adapter should nack and keep polling.
-        handle_plan(
-            plan,
-            cache=cache,
-            exa=exa,
-            decider=decider,
-            publisher=publisher,
-            candidates_topic=candidates_topic,
-        )
+        try:
+            handle_plan(
+                envelope.message,
+                cache=cache,
+                exa=exa,
+                decider=decider,
+                publisher=publisher,
+                candidates_topic=candidates_topic,
+            )
+        except Exception:
+            # Transient failure (publish or Redis duplicate check). Redelivery
+            # retries it; the loop's hard ceilings bound any repeated cost.
+            # UNCERTAIN: a persistent failure redelivers until the Pub/Sub
+            # retention/dead-letter policy gives up; no in-process retry cap.
+            log_event(
+                component=COMPONENT,
+                event="handle_failed",
+                job_id=envelope.message.job_id,
+            )
+            envelope.nack()
+            continue
+        envelope.ack()

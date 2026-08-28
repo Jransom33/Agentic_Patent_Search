@@ -1,15 +1,20 @@
-"""Pub/Sub payload codec and a fake broker for tests.
+"""Pub/Sub payload codec, ack-aware messaging interfaces, and a fake broker.
 
-GCP client wiring comes later. Components should depend on Publisher /
-Subscriber so tests can inject InMemoryBroker.
+Components depend on Publisher / Subscriber so tests can inject
+InMemoryBroker and production can inject shared.pubsub.GcpPubSub. Spec §14:
+a message must not be acked until the component's output is published or
+stored, so pull() hands back an Envelope with explicit ack() / nack().
 """
 
 from collections import defaultdict, deque
-from typing import Protocol, TypeVar
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Generic, Protocol, TypeVar
 
 from pydantic import BaseModel
 
 from shared.bounds import MAX_PUBSUB_PAYLOAD_BYTES
+from shared.logging import log_event
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -52,9 +57,27 @@ class Publisher(Protocol):
         ...
 
 
+@dataclass(frozen=True)
+class Envelope(Generic[T]):
+    """One pulled message plus the controls to settle it.
+
+    Callers ack() only after their output is published/stored, or nack() to
+    request redelivery. Exactly one of the two should be called once.
+    """
+
+    message: T
+    ack: Callable[[], None]
+    nack: Callable[[], None]
+
+
 class Subscriber(Protocol):
-    def receive(self, topic: str, model_type: type[T]) -> T | None:
-        """Take the next message on a topic, or None if the topic is empty."""
+    def pull(self, source: str, model_type: type[T]) -> Envelope[T] | None:
+        """Take the next message from a source, or None if nothing is waiting.
+
+        `source` is a topic name for InMemoryBroker and a subscription name
+        for the GCP adapter. An undecodable (poison) payload is logged,
+        acked so it never redelivers, and reported as None.
+        """
         ...
 
 
@@ -69,16 +92,40 @@ class InMemoryBroker:
         """Encode the model and append it to that topic's queue."""
         self._topics[topic].append(encode(model))
 
-    def receive(self, topic: str, model_type: type[T]) -> T | None:
-        """Pop the oldest message on the topic and validate it as model_type.
+    def pull(self, source: str, model_type: type[T]) -> Envelope[T] | None:
+        """Take the oldest message on the topic as an Envelope, or None if empty.
 
-        Returns None when the topic has nothing waiting.
+        The payload is removed on pull; ack() is then a no-op and nack() puts
+        it back at the front so the next pull retries it, mirroring Pub/Sub
+        redelivery closely enough for tests.
         """
-        # INCOMPLETE: no ack/nack. Spec §11 says do not ack until output is
-        # published/stored; the GCP adapter must do that. This fake pops
-        # immediately, so a crash after receive drops the message.
-        # FOLLOW-UP: does not replay duplicates (Pub/Sub is at-least-once).
-        queue = self._topics[topic]
+        # ASSUMPTION: single-threaded use. A crash between pull and ack still
+        # loses the message in this fake (the process dies with the queue),
+        # which only real Pub/Sub can fix.
+        queue = self._topics[source]
         if not queue:
             return None
-        return decode(queue.popleft(), model_type)
+        payload = queue.popleft()
+        try:
+            message = decode(payload, model_type)
+        except Exception:
+            # Poison message: it will never decode, so drop instead of requeue.
+            log_event(component="messaging", event="poison_message_dropped")
+            return None
+        return Envelope(
+            message=message,
+            ack=lambda: None,
+            nack=lambda: queue.appendleft(payload),
+        )
+
+    def receive(self, topic: str, model_type: type[T]) -> T | None:
+        """Test convenience: pull and immediately ack in one step.
+
+        Lets tests drain a topic to assert what was published without
+        handling Envelopes. Workers must use pull() so acks stay explicit.
+        """
+        envelope = self.pull(topic, model_type)
+        if envelope is None:
+            return None
+        envelope.ack()
+        return envelope.message
