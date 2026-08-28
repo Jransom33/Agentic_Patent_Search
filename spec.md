@@ -1,6 +1,6 @@
 # Agentic Prior Art Search Assistant — High-Level Plan
 
-Status: shared foundation through Section 8 and Component A implemented; Components B and C pending
+Status: shared foundation and Components A–B implemented locally; Component C pending
 Language: Python  
 Cloud: Google Cloud Platform (GCP)
 
@@ -259,8 +259,8 @@ The existing foundation has been extended for the new Component B design:
   limitations. Component C will make the actual evidence determination.
 - `shared/providers/claude.py` adds the separate `SearchDecider` interface,
   validated `SearchDecision` response, and deterministic fake for Component B.
-  The production implementation will use
-  `langchain-anthropic` with validated structured output inside `search/`.
+  Its production `langchain-anthropic` implementation now lives in
+  `search/claude_adapter.py`.
 - `shared/providers/exa.py` includes a production `ExaApi` implementation
   using `exa-py`; tests continue to use the deterministic fake.
 - `shared/config.py` provides `SearchSettings` and `load_search_settings()`,
@@ -269,37 +269,37 @@ The existing foundation has been extended for the new Component B design:
 
 The `SearchDecision` data contract lives beside the narrow shared Claude
 interface for Component B (alongside `ClaimAnalyzer` and `CandidateRanker`)
-so the fake and future production adapter return the same validated type. The
-iterative loop and its state still belong inside Component B.
+so the fake and production adapter return the same validated type. The
+iterative loop and its state belong inside Component B.
 
 Automated tests cover effective-plan validation, query provenance, terminal
 failures, the 40-query totals bound, fake finish/continue decisions, and
 Component B settings without Cloud SQL credentials. The full suite currently
 passes without paid API calls.
 
-## 9. Component B — Search Orchestration and Retrieval
+## 9. Component B — Search Orchestration and Retrieval (IMPLEMENTED LOCALLY)
 
-Component B's code lives in the `search/` package. It will be a bounded
-iterative search agent running as one background worker. It will:
+Component B's code lives in the `search/` package. It is a bounded iterative
+search agent running as one background worker. It:
 
-- receive a structured search plan from Pub/Sub, not the raw specification or
+- receives a structured search plan from Pub/Sub, not the raw specification or
   claims files;
-- execute up to 12 initial Exa queries using bounded concurrency;
-- check Redis before each equivalent Exa query and cache successful public
+- executes up to 12 initial Exa queries using bounded concurrency;
+- checks Redis before each equivalent Exa query and caches successful public
   result metadata for a limited time;
-- re-validate publication dates after retrieval;
-- enforce the critical date, normalize URLs, merge duplicates, and preserve
+- re-validates publication dates after retrieval;
+- enforces the critical date, normalizes URLs, merges duplicates, and preserves
   which executed queries found each candidate;
-- give Claude the claim limitations, tried queries, and bounded candidate
+- gives Claude the claim limitations, tried queries, and bounded candidate
   snippets after each search pass;
-- use a small validated `SearchDecision` response in which Claude chooses
+- uses a small validated `SearchDecision` response in which Claude chooses
   `finish` or `continue`, identifies remaining coverage gaps, and supplies
   three to six follow-up queries when continuing;
-- repeat until Claude finishes or Python enforces a hard ceiling of 40 total
+- repeats until Claude finishes or Python enforces a hard ceiling of 40 total
   queries, eight search passes, or seven continuation decisions;
-- carry the original and follow-up queries forward as the effective search
+- carries the original and follow-up queries forward as the effective search
   plan; and
-- publish the candidates, effective plan, provenance, and cache totals to
+- publishes the candidates, effective plan, provenance, and cache totals to
   Component C through Pub/Sub.
 
 Claude chooses when sufficient searching has been performed, but ordinary
@@ -310,9 +310,65 @@ Component C.
 Redis is part of the successful application path, not an unused supporting
 service. Repeating the same searches should visibly produce cache hits.
 
-Component B will not retrieve full documents, rank evidence, draw legal
+Component B does not retrieve full documents, rank evidence, draw legal
 conclusions, or access Cloud SQL. Those responsibilities remain with Component
 C.
+
+### 9.1 Implemented Component B
+
+- `search/cache.py` defines the `SearchCache` interface, a TTL-aware
+  `FakeRedis`, and the production `RedisSearchCache`. Equivalent queries share
+  cache entries after lowercasing and collapsing whitespace; the critical date
+  remains part of the key. Successful empty Exa results are cached too.
+- `search/consolidate.py` re-checks dates, drops results after the critical
+  date, keeps undated results as `unknown`, normalizes URLs, removes common
+  tracking parameters, merges duplicates, and unions query provenance.
+- `search/executor.py` checks the cache sequentially and runs only cache misses
+  through Exa with at most four worker threads. Each Exa query receives at most
+  three total attempts, and successful results are cached before the pass
+  reports any terminal error.
+- `search/loop.py` owns the iterative state and enforces the 40-query,
+  eight-pass, and seven-decision ceilings. It validates Claude follow-ups
+  against the effective plan, publishes `search_failed` or `decision_failed`
+  terminal outcomes without partial candidates, and otherwise returns the
+  final candidates and effective plan.
+- `search/claude_adapter.py` implements the production `SearchDecider` with
+  `langchain-anthropic` structured output. It sends limitations, tried queries,
+  and bounded candidate snippets as tagged untrusted data.
+- `search/worker.py` handles one plan at a time, skips jobs with an existing
+  Redis completion key, publishes one final candidate batch per handling, and
+  then records completion best-effort. `search/main.py` wires the in-memory
+  broker and provider fakes for local runs.
+- Component B tests cover cache normalization and expiry, miss-to-hit behavior,
+  date filtering, URL deduplication, provenance, immediate finish,
+  continuation, every hard ceiling, invalid follow-ups, provider failure, and
+  duplicate worker delivery. The full suite currently has 78 passing tests
+  without paid API calls.
+
+Assumptions and known limits of this version:
+
+- Same-day publications are treated as on/before the critical date. Results
+  after the critical date are dropped; undated results remain candidates for
+  Component C to assess.
+- Query-cache and completion keys both expire after 24 hours. Normalized query
+  text appears in Redis keys; uploaded specification and claims text do not.
+- URL normalization removes `utm_*` and a short list of common click-tracking
+  parameters. Other tracking parameters may prevent two equivalent URLs from
+  merging, and conflicting dates keep the first dated value seen.
+- Exa retries have no backoff, and `MAX_RETRIES` means three total attempts.
+  Claude provider errors and invalid decisions currently share one retry
+  budget and one terminal `decision_failed` outcome.
+- `RedisSearchCache` assumes the default Redis port with no AUTH or TLS and has
+  no explicit socket timeout. These settings must be verified against the
+  Memorystore configuration before deployment.
+- A Redis failure during the duplicate check prevents processing until the
+  message is retried. A failure while writing the completion key occurs after
+  publication and can therefore permit a later duplicate batch; Component C
+  must remain idempotent.
+- Local `search/main.py` creates its own empty `InMemoryBroker`, so it does not
+  communicate with `intake/main.py`. Real Pub/Sub, acknowledgement handling,
+  poison-message handling, and production dependency wiring remain Section 11
+  work.
 
 ### Component B Sequence
 
@@ -495,7 +551,7 @@ Build the project in the order of Sections 5–11:
 2. Component A and its API (Section 7).
 3. Foundation updates required before Component B (Section 8).
 4. Component B and its LangChain-guided, Redis-backed iterative Exa search
-   (Section 9).
+   (Section 9). (COMPLETED LOCALLY)
 5. Component C and Cloud SQL report persistence (Section 10).
 6. Production adapters, GCP resources, and deployment of each process to its
    own VM (Section 11).
@@ -507,15 +563,14 @@ time before moving to the next component.
 
 ## 17. Testing and Demonstration
 
-Fake Claude, Exa, Pub/Sub, and database implementations are available.
-Automated tests for the shared foundation and Component A use those fakes by
-default so they do not require paid APIs or cloud services. A Redis fake
-still needs to be added with Component B.
+Fake Claude, Exa, Pub/Sub, Redis, and database implementations are available.
+Automated tests for the shared foundation and Components A–B use those fakes
+by default, so they do not require paid APIs or cloud services.
 
-Component B tests must demonstrate immediate agent-selected stopping,
-continuation with new queries, forced stopping at the configured budgets,
-rejection of invalid follow-up queries, query provenance, date filtering,
-deduplication, and Redis miss-to-hit behavior.
+Component B tests demonstrate immediate agent-selected stopping, continuation
+with new queries, forced stopping at the configured budgets, rejection of
+invalid follow-up queries, query provenance, date filtering, deduplication,
+and Redis miss-to-hit behavior.
 
 The final cloud demonstration should show:
 
