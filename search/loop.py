@@ -90,9 +90,12 @@ def _decide_with_retries(
         # rounds.
         try:
             if decision.action is SearchAction.CONTINUE:
+                # Validate only queries that fit the remaining total budget.
+                remaining = MAX_TOTAL_QUERIES - len(tried)
                 EffectiveSearchPlan(
                     original=plan,
-                    followup_queries=followups_so_far + decision.followup_queries,
+                    followup_queries=followups_so_far
+                    + decision.followup_queries[:remaining],
                 )
             return decision
         except (ValidationError, ValueError) as exc:
