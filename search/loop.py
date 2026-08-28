@@ -27,12 +27,26 @@ from shared.models import (
     SearchPlanMessage,
     SearchQuery,
 )
+from shared.logging import log_event
 from shared.providers.claude import SearchAction, SearchDecider, SearchDecision
 from shared.providers.exa import ExaClient, SearchHit
 
 # Safe terminal-failure tokens, matching Component A's analysis_failed style.
 SEARCH_FAILED = "search_failed"
 DECISION_FAILED = "decision_failed"
+
+
+def _safe_decision_error(exc: Exception) -> str:
+    """Return bounded validation detail without prompts or candidate content."""
+    if isinstance(exc, ValidationError):
+        issues = []
+        for item in exc.errors(include_input=False, include_context=False):
+            location = ".".join(map(str, item["loc"])) or "response"
+            issues.append(f"{location}: {item['msg']}")
+        return "; ".join(issues[:2])[:80]
+    if str(exc) == "Claude did not return a valid structured search decision":
+        return str(exc)
+    return type(exc).__name__
 
 
 def _decide_with_retries(
@@ -48,25 +62,47 @@ def _decide_with_retries(
     effective plan (unique ids, known limitation ids, total budget). Returns
     None when every attempt failed so the caller can emit decision_failed.
     """
-    for _attempt in range(MAX_RETRIES):
+    for attempt in range(1, MAX_RETRIES + 1):
         try:
             decision = decider.decide_search(plan, tried, candidates)
-            # Re-validate follow-ups against the whole plan by building the
-            # extended EffectiveSearchPlan; its validators enforce uniqueness,
-            # limitation links, and the 40-query budget.
+        except (ValidationError, ValueError) as exc:
+            log_event(
+                component="search",
+                event="decision_attempt_failed",
+                job_id=plan.job_id,
+                error_code="decision_response_invalid",
+                error_detail=f"attempt={attempt} {_safe_decision_error(exc)}"[:80],
+            )
+            continue
+        except Exception as exc:
+            # Provider details can contain request data, so log only its type.
+            log_event(
+                component="search",
+                event="decision_attempt_failed",
+                job_id=plan.job_id,
+                error_code="decision_provider_error",
+                error_detail=f"attempt={attempt} {type(exc).__name__}",
+            )
+            continue
+
+        # Re-validate follow-ups against the whole plan. Keeping this separate
+        # identifies valid Claude output whose IDs/links conflict with earlier
+        # rounds.
+        try:
             if decision.action is SearchAction.CONTINUE:
                 EffectiveSearchPlan(
                     original=plan,
                     followup_queries=followups_so_far + decision.followup_queries,
                 )
             return decision
-        except (ValidationError, ValueError):
-            # Invalid structured output or follow-ups: try again.
-            continue
-        except Exception:
-            # Provider/network error: also retried, same bounded budget.
-            # UNCERTAIN: one retry budget covers both invalid output and
-            # provider errors; split them if the demo needs distinct codes.
+        except (ValidationError, ValueError) as exc:
+            log_event(
+                component="search",
+                event="decision_attempt_failed",
+                job_id=plan.job_id,
+                error_code="followups_invalid",
+                error_detail=f"attempt={attempt} {_safe_decision_error(exc)}"[:80],
+            )
             continue
     return None
 
