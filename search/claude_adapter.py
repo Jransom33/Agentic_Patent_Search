@@ -13,9 +13,7 @@ from shared.logging import log_verbose
 from shared.models import Candidate, SearchPlanMessage, SearchQuery
 from shared.providers.claude import SearchDecision
 
-# UNCERTAIN: same model as Component A; verify the recommended Anthropic model
-# name before deploying.
-DEFAULT_MODEL = "claude-sonnet-4-5"
+DEFAULT_MODEL = "claude-sonnet-5"
 
 # All instructions live here. Exa snippets go only in the human message as
 # tagged untrusted data, so text inside a search result cannot steer the
@@ -74,13 +72,10 @@ class LangChainSearchDecider:
     """SearchDecider implementation that calls Anthropic through LangChain."""
 
     def __init__(self, api_key: str, model: str = DEFAULT_MODEL) -> None:
-        # temperature=0 for repeatability; MAX_RETRIES gives bounded retries on
-        # temporary provider failures (spec §14). with_structured_output makes
-        # the model return JSON parsed and validated as SearchDecision.
+        # Sonnet 5 rejects non-default sampling parameters, so temperature is omitted.
         self._decider = ChatAnthropic(
             model=model,
             api_key=api_key,
-            temperature=0,
             timeout=120,
             max_retries=MAX_RETRIES,
         ).with_structured_output(SearchDecision)

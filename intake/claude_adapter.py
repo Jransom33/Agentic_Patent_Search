@@ -17,9 +17,7 @@ from shared.logging import log_verbose
 from shared.models import SearchPlanMessage
 from shared.providers.claude import ClaimAnalysis
 
-# UNCERTAIN: model choice balances cost and quality for a class project;
-# verify the current recommended Anthropic model name before deploying.
-DEFAULT_MODEL = "claude-sonnet-4-5"
+DEFAULT_MODEL = "claude-sonnet-5"
 
 # All instructions live here, in the system prompt. The uploaded documents go
 # only in the human message as tagged data, so text inside them that tries to
@@ -65,13 +63,12 @@ class LangChainClaude:
     """ClaimAnalyzer implementation that calls Anthropic through LangChain."""
 
     def __init__(self, api_key: str, model: str = DEFAULT_MODEL) -> None:
-        # temperature=0 for repeatability; MAX_RETRIES gives bounded retries on
+        # MAX_RETRIES gives bounded retries on
         # temporary provider failures (spec §14). with_structured_output makes
         # the model return JSON parsed and validated as ClaimAnalysis.
         self._analyzer = ChatAnthropic(
             model=model,
             api_key=api_key,
-            temperature=0,
             timeout=120,
             max_retries=MAX_RETRIES,
         ).with_structured_output(ClaimAnalysis)
