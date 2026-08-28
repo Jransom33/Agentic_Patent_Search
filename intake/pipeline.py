@@ -39,13 +39,11 @@ class IntakeFailedError(Exception):
 def _safe_analysis_error(exc: Exception) -> str:
     """Describe the failure without returning provider or document content."""
     if isinstance(exc, ValidationError):
-        locations = [
-            ".".join(map(str, item["loc"])) or "response"
-            for item in exc.errors(include_input=False, include_context=False)
-        ]
+        item = exc.errors(include_input=False, include_context=False)[0]
+        location = ".".join(map(str, item["loc"])) or "response"
         # Keep the generated diagnostic within shared.logging's 80-char field
         # bound so it is visible rather than redacted.
-        return f"Claude response validation failed: {', '.join(locations[:5])}"[:80]
+        return f"Claude validation failed: {location}: {item['msg']}"[:80]
     if str(exc) == "Claude did not return a valid structured claim analysis":
         return str(exc)
     return f"Analysis failed ({type(exc).__name__})"

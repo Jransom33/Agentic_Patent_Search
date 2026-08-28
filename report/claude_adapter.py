@@ -25,6 +25,7 @@ from shared.models import (
     SearchPlanMessage,
     StrictModel,
 )
+from shared.logging import log_verbose
 from shared.providers.exa import DocumentContent
 
 # Component C uses Sonnet 5's larger context window for up to 25 documents.
@@ -130,8 +131,7 @@ class LangChainCandidateRanker:
         """Ask Claude to rank the candidates and build the validated Report.
 
         Any provider or validation failure raises; the pipeline's bounded
-        retry wrapper decides whether to try again or fail the job. Nothing
-        here logs prompt, snippet, or page text.
+        retry wrapper decides whether to try again or fail the job.
         """
         # Snippets and page text sit inside tags as data, never instructions.
         prompt = (
@@ -141,11 +141,18 @@ class LangChainCandidateRanker:
             f"<candidates>\n{_format_candidates(candidates) or 'none found'}\n</candidates>\n\n"
             f"<contents>\n{_format_contents(contents) or 'no full text retrieved'}\n</contents>"
         )
-        result = self._ranker.invoke([("system", _SYSTEM_PROMPT), ("human", prompt)])
-        # with_structured_output can return a dict for non-pydantic schemas or
-        # None on a refusal; accept only a validated RankingOutput instance.
-        if not isinstance(result, RankingOutput):
-            raise ValueError("Claude did not return a valid structured ranking")
+        log_verbose("report", "claude_prompt", prompt)
+        try:
+            result = self._ranker.invoke([("system", _SYSTEM_PROMPT), ("human", prompt)])
+            # with_structured_output can return a dict for non-pydantic schemas or
+            # None on a refusal; accept only a validated RankingOutput instance.
+            if not isinstance(result, RankingOutput):
+                raise ValueError(f"invalid structured ranking: {result!r}")
+        except Exception as exc:
+            # Log the failure (parse errors include Claude's raw output) for debugging.
+            log_verbose("report", "claude_error", repr(exc))
+            raise
+        log_verbose("report", "claude_response", result.model_dump_json())
 
         # Rebuild the Report from the real batch rows: Claude only supplies
         # rank/url/explanation/passages, so candidate fields cannot be altered.

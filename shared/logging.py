@@ -1,8 +1,7 @@
-"""Safe structured logs for all three components.
+"""Structured logs for all three components.
 
-Each line has bounded lifecycle fields and may include a sanitized error
-detail. Values that look like document text, prompts, or credentials are
-replaced with [redacted] (spec §12).
+log_event emits bounded lifecycle fields with redaction (spec §12).
+log_verbose emits full prompt/document/response text, masking only secrets.
 """
 
 import logging
@@ -74,3 +73,17 @@ def log_event(
     if cleaned_detail is not None:
         parts.append(f"error_detail={cleaned_detail}")
     _logger.info(" ".join(parts))
+
+
+def log_verbose(component: str, event: str, text: str) -> None:
+    """Log full text at INFO, replacing secrets with [key].
+
+    Unlike log_event, this does not truncate or redact document content.
+    Only known env secrets and sk-ant- tokens are masked.
+    """
+    masked = str(text)
+    for secret in (os.environ.get(name, "") for name in _SECRET_ENV_NAMES):
+        if secret:
+            masked = masked.replace(secret, "[key]")
+    masked = re.sub(r"sk-ant-\S+", "[key]", masked)
+    _logger.info("component=%s event=%s\n%s", component, event, masked)

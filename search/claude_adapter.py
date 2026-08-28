@@ -9,6 +9,7 @@ keep using FakeClaude and never call this class or the network.
 from langchain_anthropic import ChatAnthropic
 
 from shared.bounds import MAX_FOLLOWUP_QUERIES, MAX_RETRIES, MIN_FOLLOWUP_QUERIES
+from shared.logging import log_verbose
 from shared.models import Candidate, SearchPlanMessage, SearchQuery
 from shared.providers.claude import SearchDecision
 
@@ -93,8 +94,7 @@ class LangChainSearchDecider:
         """Ask Claude whether searching should finish or continue.
 
         Any provider or validation failure raises; the loop's bounded retry
-        wrapper decides whether to try again or emit decision_failed. Nothing
-        here logs prompt or snippet text.
+        wrapper decides whether to try again or emit decision_failed.
         """
         # Snippets sit inside <candidates> tags as data, never as instructions.
         prompt = (
@@ -103,9 +103,16 @@ class LangChainSearchDecider:
             f"<tried_queries>\n{_format_queries(tried_queries)}\n</tried_queries>\n\n"
             f"<candidates>\n{_format_candidates(candidates) or 'none found yet'}\n</candidates>"
         )
-        result = self._decider.invoke([("system", _SYSTEM_PROMPT), ("human", prompt)])
-        # with_structured_output can return a dict for non-pydantic schemas or
-        # None on a refusal; accept only a validated SearchDecision instance.
-        if not isinstance(result, SearchDecision):
-            raise ValueError("Claude did not return a valid structured search decision")
+        log_verbose("search", "claude_prompt", prompt)
+        try:
+            result = self._decider.invoke([("system", _SYSTEM_PROMPT), ("human", prompt)])
+            # with_structured_output can return a dict for non-pydantic schemas or
+            # None on a refusal; accept only a validated SearchDecision instance.
+            if not isinstance(result, SearchDecision):
+                raise ValueError(f"invalid structured search decision: {result!r}")
+        except Exception as exc:
+            # Log the failure (parse errors include Claude's raw output) for debugging.
+            log_verbose("search", "claude_error", repr(exc))
+            raise
+        log_verbose("search", "claude_response", result.model_dump_json())
         return result
