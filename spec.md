@@ -1,6 +1,6 @@
 # Agentic Prior Art Search Assistant — High-Level Plan
 
-Status: shared foundation and Components A–B implemented locally; Component C pending
+Status: shared foundation and Components A–C implemented locally; production cloud wiring pending
 Language: Python  
 Cloud: Google Cloud Platform (GCP)
 
@@ -400,17 +400,18 @@ flowchart TD
     MarkDone --> Ack[Acknowledge input message]
 ```
 
-## 10. Component C — Evidence Ranking and Report Storage
+## 10. Component C — Evidence Ranking and Report Storage (IMPLEMENTED LOCALLY)
 
-Component C's code lives in the `report/` package. It will be a background
+Component C's code lives in the `report/` package. It is a background
 worker responsible for:
 
 - receiving candidate batches from Pub/Sub;
-- screening snippets before requesting additional content;
-- retrieving full Exa content only for a limited promising or uncertain set;
+- retrieving full Exa content for every candidate in the batch (the batch is
+  already capped at 25 candidates, so content fetches share that bound);
 - using a structured LangChain Claude call to evaluate candidates against
   specific claim limitations;
-- requiring source-linked supporting passages for positive findings;
+- requesting source-linked supporting passages for positive findings and
+  rejecting citations whose URL does not match the ranked candidate;
 - preserving uncertainty when dates or evidence are incomplete;
 - generating the structured decision-support report; and
 - storing the report and final job status in Cloud SQL.
@@ -422,6 +423,73 @@ Building Component C also includes the production LangChain Claude ranking
 adapter behind the shared `CandidateRanker` interface, implemented inside
 `report/`; automated tests keep using the deterministic fake.
 
+### 10.1 Implemented Component C
+
+- `shared/bounds.py` sets `MAX_CONTENT_FETCHES` equal to the existing
+  `MAX_CANDIDATES` cap of 25. Component C therefore attempts to retrieve full
+  content for every candidate rather than screening candidates first.
+- `report/pipeline.py` retrieves each candidate URL independently through Exa.
+  Each URL receives at most three total attempts, so one failed URL does not
+  prevent the remaining candidates from being fetched. Exhausted URLs fall
+  back to snippet-only ranking and add a fixed uncertainty note.
+- The pipeline sends all candidates and any retrieved content to the injected
+  `CandidateRanker`. Ranking and report validation receive at most three
+  pipeline attempts; permanent failure raises the safe `ranking_failed` code.
+- Python validates that the report's job ID and critical date match the input,
+  every ranked URL came from the candidate batch, and every citation URL
+  matches the candidate to which it is attached.
+- `report/claude_adapter.py` implements the production ranker with
+  `langchain-anthropic` structured output, Claude Sonnet 5, a finite timeout,
+  and bounded provider retries. Sampling parameters are left at their defaults
+  because Sonnet 5 rejects non-default values. Claude returns only rank, URL,
+  explanation, passages, and uncertainty notes; Python rebuilds each result
+  from the original candidate row so Claude cannot alter source metadata or
+  provenance.
+- `report/worker.py` handles terminal Component B outcomes, visible `ranking`,
+  `completed`, and `failed` states, first-write-wins report storage, and
+  duplicate deliveries without repeating ranking after a report exists.
+  A successful search with no candidates still stores an empty completed
+  report rather than being treated as a system failure.
+- `report/main.py` wires the in-memory broker, job store, Exa fake, and Claude
+  fake for local runs. Component C tests cover successful and degraded
+  ranking, bounded retries, invented URLs, mismatched citation URLs, terminal
+  search failures, empty results, and duplicate delivery.
+
+Assumptions and known limits of this version:
+
+- Content retrieval is sequential and makes one Exa request per candidate per
+  attempt, with no retry backoff. A successful Exa response with no usable
+  body is not retried. In the worst case, 25 candidates can cause 75 content
+  requests.
+- Exa truncates each retrieved body to 10,000 characters. Sending 25 bodies
+  can create a large Claude prompt. Sonnet 5 provides a one-million-token
+  context window, but actual token count, ranking quality, cost, and the
+  120-second adapter timeout must still be verified before deployment.
+- Claude is instructed to copy supporting passages from the candidate snippet
+  or retrieved text. Python confirms that each citation URL matches its
+  candidate, but it does not yet verify that the passage appears verbatim in
+  that source. This will be evaluated with real ranking output before deciding
+  whether to add deterministic quote verification.
+- Citations may be empty when evidence is uncertain. Passage strings longer
+  than `MAX_PASSAGE_LENGTH` are truncated rather than rejecting the complete
+  ranking response.
+- Ranking validation and provider failures currently share one pipeline retry
+  budget. The LangChain adapter also has its own bounded provider retry
+  behavior.
+- Report insertion and the transition to `completed` are separate operations.
+  A crash between them can leave a stored report with status `ranking`, and a
+  duplicate delivery currently skips the report without repairing that state.
+  Section 11 must fix this by storing the report and completed status in one
+  Cloud SQL transaction.
+- A duplicate of a job previously marked `ranking_failed` has no stored report,
+  so the current worker tries ranking again. Unexpected store errors and poison
+  messages can stop the local worker; production Pub/Sub ack/nack handling is
+  deferred to Section 11.
+- Local `report/main.py` creates an isolated empty in-memory broker and store,
+  so it does not communicate with the local Component A or B processes and
+  loses state on restart. Cloud SQL, Pub/Sub, and production dependency wiring
+  remain Section 11 work.
+
 ### Component C Sequence
 
 ```mermaid
@@ -432,10 +500,11 @@ flowchart TD
     FailureCheck -->|yes| MarkFailed[Mark job failed]
     MarkFailed --> AckFailure[Acknowledge message]
     FailureCheck -->|no| MarkRanking[Mark job ranking]
-    MarkRanking --> Screen[Screen candidate snippets]
-    Screen --> Select[Select promising or uncertain candidates]
-    Select --> Fetch[Retrieve selected content through Exa]
-    Fetch --> Rank[LangChain Claude ranks evidence]
+    MarkRanking --> Fetch[Retrieve each candidate through Exa]
+    Fetch --> FetchCheck{Any URL exhausted retries}
+    FetchCheck -->|yes| AddNote[Add snippet-only uncertainty note]
+    FetchCheck -->|no| Rank[LangChain Claude ranks evidence]
+    AddNote --> Rank
     Rank --> ValidateReport{Structured report valid}
     ValidateReport -->|no| RetryOrFail[Bounded retry or safe failure]
     ValidateReport -->|yes| Store[Store report and completed status]
@@ -450,6 +519,8 @@ in-memory fakes to GCP, after Components A–C work locally:
 - a GCP Pub/Sub adapter with explicit acknowledgement and negative
   acknowledgement handling;
 - a Cloud SQL implementation of JobStore that executes the included schema;
+- an atomic Cloud SQL completion operation that stores the report and changes
+  the job status to `completed` in one database transaction;
 - production wiring that selects real adapters while tests inject fakes; and
 - GCP resources and deployment of each process to its own Compute Engine VM.
 
@@ -502,8 +573,8 @@ than uploaded files or full source documents.
 6. Component B consolidates the results and asks Claude whether to finish or
    generate targeted follow-up queries. It repeats within the configured hard
    limits, then publishes the effective plan and candidate batch.
-7. Component C receives the candidates, retrieves selected evidence, and asks
-   Claude to rank it.
+7. Component C receives the candidates, retrieves their full content, and asks
+   Claude to rank the evidence.
 8. Component C stores the completed report in Cloud SQL.
 9. The user retrieves the report from Component A using the job ID.
 
@@ -552,7 +623,7 @@ Build the project in the order of Sections 5–11:
 3. Foundation updates required before Component B (Section 8).
 4. Component B and its LangChain-guided, Redis-backed iterative Exa search
    (Section 9). (COMPLETED LOCALLY)
-5. Component C and Cloud SQL report persistence (Section 10).
+5. Component C and local report persistence (Section 10). (COMPLETED LOCALLY)
 6. Production adapters, GCP resources, and deployment of each process to its
    own VM (Section 11).
 7. End-to-end testing, documentation, cleanup instructions, and screenshots.
@@ -564,13 +635,19 @@ time before moving to the next component.
 ## 17. Testing and Demonstration
 
 Fake Claude, Exa, Pub/Sub, Redis, and database implementations are available.
-Automated tests for the shared foundation and Components A–B use those fakes
+Automated tests for the shared foundation and Components A–C use those fakes
 by default, so they do not require paid APIs or cloud services.
 
 Component B tests demonstrate immediate agent-selected stopping, continuation
 with new queries, forced stopping at the configured budgets, rejection of
 invalid follow-up queries, query provenance, date filtering, deduplication,
 and Redis miss-to-hit behavior.
+
+Component C tests demonstrate full-content retrieval, snippet-only degradation
+after per-URL retrieval retries, bounded ranking retries, rejection of invented
+sources and mismatched citation URLs, terminal search-failure handling, valid
+empty reports, and duplicate delivery without repeated ranking. The local
+suite currently has 86 passing tests without paid API calls.
 
 The final cloud demonstration should show:
 

@@ -47,7 +47,9 @@ MAX_FOLLOWUP_QUERIES = 6
 REDIS_CACHE_TTL_SECONDS = 86_400
 
 # --- Ranking bounds (Component C / reports) ---
-MAX_CONTENT_FETCHES = 8
+# Component C fetches full text for every candidate in the batch, so the
+# fetch cap equals the candidate cap. No snippet screening step.
+MAX_CONTENT_FETCHES = MAX_CANDIDATES
 MAX_UNCERTAINTY_NOTES = 20
 MAX_PASSAGE_LENGTH = 800
 
