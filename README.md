@@ -1,5 +1,7 @@
 # Agentic Prior Art Search Assistant
 
+![Prior Art demo](demo_ps.gif)
+
 A distributed application that helps a patent examiner find candidate prior art. The examiner submits a patent specification (PDF), a claims file (`.txt`), and a critical date; the system analyzes the claims with Claude, runs an iterative agent-guided web search over non-patent literature through Exa, ranks the evidence against specific claim limitations, and stores a citation-backed report the examiner retrieves by job ID.
 
 It is **decision support only**: every report carries a disclaimer that a human must make any legal determination about patentability, anticipation, or validity. The system never draws legal conclusions.
