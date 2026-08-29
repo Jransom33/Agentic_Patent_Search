@@ -87,6 +87,15 @@ async function poll(jobId, token) {
   }, POLL_MS);
 }
 
+function quoted(text) {
+  return `&ldquo;${esc(text)}&rdquo;`;
+}
+
+// Wraps one labelled block of a card, or nothing when there is no content.
+function field(label, body) {
+  return body ? `<section class="field"><p class="label">${label}</p>${body}</section>` : "";
+}
+
 function renderReport(report) {
   if (!report) {
     reportEl.innerHTML = `<p class="report-meta">Job completed, but no report was stored.</p>`;
@@ -104,23 +113,31 @@ function renderReport(report) {
     const heading = href
       ? `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${title}</a>`
       : title;
-    const cites = (item.citations || []).map((cite) => {
-      const citeHref = safeHref(cite.url);
-      const link = citeHref
-        ? `<a href="${esc(citeHref)}" target="_blank" rel="noopener noreferrer">${esc(citeHref)}</a>`
-        : "";
-      return `<p class="cite">${esc(cite.passage)}${link ? `<br />${link}` : ""}</p>`;
-    }).join("");
+    const source = href
+      ? `<a class="source-link" href="${esc(href)}" target="_blank" rel="noopener noreferrer" aria-label="Open source">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M10 6H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4M14 4h6v6M10 14L20 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </a>`
+      : "";
+    const cites = (item.citations || [])
+      .map((cite) => `<p class="cite">${quoted(cite.passage)}</p>`)
+      .join("");
     const queries = (cand.query_ids || []).map(esc).join(", ");
+    // Search snippets are truncated mid-sentence, so they always trail off.
+    const snippet = String(cand.snippet ?? "").trim().replace(/[\s.…]+$/, "");
     return `
       <article class="evidence">
-        <p class="rank">Rank ${esc(item.rank)}</p>
+        <div class="evidence-head">
+          <p class="rank">Rank ${esc(item.rank)}</p>
+          ${source}
+        </div>
         <h3>${heading}</h3>
         <p class="meta">${esc(cand.published_on || "date unknown")} · ${esc(cand.date_check || "")}</p>
-        <p class="snippet">${esc(cand.snippet)}</p>
-        <p class="explain">${esc(item.explanation)}</p>
-        ${cites}
-        ${queries ? `<p class="queries">Queries ${queries}</p>` : ""}
+        ${field("Snippet", snippet ? `<p class="snippet">${quoted(snippet + "\u2026")}</p>` : "")}
+        ${field("Relevance", `<p class="explain">${esc(item.explanation)}</p>`)}
+        ${field("Quotes", cites)}
+        ${field("Queries", queries ? `<p class="queries">${queries}</p>` : "")}
       </article>`;
   }).join("");
 

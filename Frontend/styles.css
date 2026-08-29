@@ -6,6 +6,7 @@
   --bar: #24302d;
   --pill: #2e3c38;
   --foam: #e8eeea;
+  --sand: #d8c4a8;
   --serif: "Playfair Display", Georgia, serif;
   --sans: Inter, system-ui, sans-serif;
 }
@@ -95,7 +96,7 @@ body {
 
 .welcome .spark {
   margin-right: 0.35rem;
-  color: #d8c4a8;
+  color: var(--sand);
 }
 
 .status {
@@ -259,7 +260,7 @@ body {
 }
 
 .disclaimer {
-  color: #d8c4a8;
+  color: var(--sand);
   font-size: 0.92rem;
   line-height: 1.5;
 }
@@ -275,6 +276,13 @@ body {
   padding-left: 2rem;
 }
 
+.evidence-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
 .evidence h3 {
   font-family: var(--serif);
   font-size: 1.45rem;
@@ -286,18 +294,52 @@ body {
   color: inherit;
 }
 
-.rank {
-  font-size: 0.75rem;
-  letter-spacing: 0.08em;
+.field {
+  padding-top: 0.9rem;
+  border-top: 1px solid #32403b;
+  margin-top: 0.9rem;
+}
+
+.field > :last-child {
+  margin-bottom: 0;
+}
+
+.source-link {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 1.85rem;
+  height: 1.85rem;
+  border-radius: 0.45rem;
+  color: var(--sand);
+  text-decoration: none;
+}
+
+.source-link svg {
+  width: 1.05rem;
+  height: 1.05rem;
+}
+
+.source-link:hover {
+  background: var(--pill);
+}
+
+.rank,
+.label {
+  font-size: 0.72rem;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: #9aaba4;
+  color: #8b9c95;
+}
+
+.label {
+  margin-bottom: 0.45rem;
 }
 
 .evidence .meta,
 .queries {
   color: #9aaba4;
   font-size: 0.85rem;
-  margin-bottom: 0.7rem;
 }
 
 .snippet,
@@ -305,14 +347,19 @@ body {
 .cite {
   line-height: 1.55;
   color: #d5ddd8;
-  margin-bottom: 0.7rem;
+}
+
+.snippet {
+  font-style: italic;
+  color: #b7c0bb;
 }
 
 .cite {
   border-left: 2px solid #3d4d47;
   padding-left: 0.85rem;
-  color: #b7c0bb;
+  color: #c5cdc8;
   font-size: 0.92rem;
+  margin-bottom: 0.55rem;
 }
 
 @media (max-width: 780px) {
